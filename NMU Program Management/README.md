@@ -36,21 +36,15 @@ Use the account selector in the top bar to switch demo identities. The selector 
 | Sam Okafor | Employee | Assigned program tasks, notes, and task status |
 | Alex Rivera | External Partner | Shared Seattle program and the task assigned to the partner account |
 
-## Airtable import
+## Airtable linked-table sync
 
-The integration is an explicit, one-way import of program records. NMU's Airtable account is not preconfigured. Create a [Personal Access Token](https://airtable.com/create/tokens) with read access to the relevant base, then:
+The app syncs the 12 tables shown in the NMU Airtable schema: `Users`, `Templates`, `Template List`, `Roles`, `Steps`, `Programs`, `Region`, `Site`, `Session`, `Instructors`, `Work`, and `WIP`. Add `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` to Railway Variables (or local `.env`) and give the token access to the base with `schema.bases:read`, `data.records:read`, and `data.records:write`. The secret is only used server-side and must never be committed or pasted into source.
 
-1. Copy `.env.example` to `.env`.
-2. Set `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, and `AIRTABLE_PROJECTS_TABLE`.
-3. Configure `AIRTABLE_FIELD_MAPPING` with JSON mapping app keys to exact Airtable field labels, for example:
+An administrator opens **Settings → Airtable integration**, checks schema access, and selects **Sync all Airtable tables**. Sync is manual/on-demand. Airtable record IDs and linked-record field values are retained in the local database without automatically deleting Airtable records or local rows. `Session` records are projected as app programs; `Work` records linked to a session and step are projected as app tasks. The other tables are stored as linked reference snapshots in `airtable_records`.
 
-   ```json
-   {"name":"Program Name","location":"Location","startDate":"Start Date","endDate":"End Date","description":"Description","programType":"Program Type","hostOrganization":"Host Organization"}
-   ```
+Ownership is intentionally limited: Airtable owns setup/reference data. The app writes only `Status`, `Due Date`, `Completed Date`, and `Assignee` on already-linked `Work` records. It does not create Work records for app-only tasks. Concurrent edits to an app-owned field are surfaced as conflicts and not overwritten; resolve the value in Airtable or the app, then sync again. Status values must have an Airtable choice equivalent to Not Started, In Progress, Blocked, or Completed. Assignees must link to Airtable `Users` records whose email matches an active app account for assignment to appear in the app.
 
-4. Restart `npm start` and select the Airtable status in the sidebar to run **Import programs from Airtable**.
-
-The API credential is read only by the server, is excluded from Git, and is never returned to the browser. The import validates required project fields, reports skipped records, paginates through Airtable responses, and updates a previously imported program by Airtable record ID. It does not import participant data, task records, or financial information and does not send NMU task updates back to Airtable. Do not paste credentials into source code or commit `.env`.
+The first successful sync imports the Airtable value as the baseline and does not write back. Later syncs reconcile both sides. Attach a persistent Railway volume for the SQLite database before syncing; otherwise cached records and synchronization baselines can be lost when the service is replaced. Do not import real operational data until the live Railway token's schema and record permissions are verified.
 
 ## Main workflows
 
@@ -71,6 +65,8 @@ SQLite uses foreign keys and relational tables:
 - `templates` / `template_tasks`: reusable task workflows, relative deadlines, priorities, planning phases, and dependency references.
 - `tasks` / `task_dependencies`: project work, owners, status, due dates, completion records, and prerequisite relationships.
 - `task_comments`, `activity_logs`, `notifications`: collaboration context and user-specific updates.
+- `airtable_tables` / `airtable_records`: the most recently synchronized Airtable schema and each table's raw field values, including linked record IDs.
+- `airtable_work_sync` / `airtable_sync_conflicts`: per-Work-record sync baselines and unresolved concurrent edits.
 
 The database is stored at `.data/nmu.sqlite` by default. Set `NMU_DATABASE_PATH` to choose another SQLite file. The API computes project completion and blocked status from relational task data.
 
@@ -80,7 +76,7 @@ The database is stored at `.data/nmu.sqlite` by default. Set `NMU_DATABASE_PATH`
 npm test
 ```
 
-The integration tests launch isolated server/databases and cover seeded data, project and task workflows, partner access boundaries, template editing, production sign-in, origin checks, session logout, password changes, account creation, and account disabling.
+The integration tests launch isolated servers/databases and cover Airtable schema discovery, pagination, batched writes, all-table linked-record projection, field-limited Work write-back, conflict detection, authentication, and existing project/task workflows.
 
 ## Hosting and security
 
@@ -97,4 +93,4 @@ Authentication uses scrypt password hashes, random server-side sessions in HttpO
 
 SQLite durability on Railway requires a persistent volume mounted at the database path (set `NMU_DATABASE_PATH` to a path on that volume); otherwise data can be lost when the service is replaced. SQLite is intended for a single app instance. Use a managed relational database before scaling to concurrent instances. Netlify hosting would require adapting the API to Netlify Functions and using a hosted database.
 
-Partner project access follows the existing shared-project and task-assignment rules. Review those permissions before importing real operational data. The current Airtable integration remains a one-way, single-table program import; linked tables, bidirectional task sync, email/chat reminders, calendar synchronization, and participant records are not implemented.
+Partner project access follows the existing shared-project and task-assignment rules. Review those permissions before importing real operational data. Airtable synchronization is manual and does not include email/chat reminders or calendar synchronization.

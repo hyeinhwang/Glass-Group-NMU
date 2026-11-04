@@ -7,6 +7,11 @@ import {
   createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual
 } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import {
+  AIRTABLE_TABLE_NAMES, appStatusToAirtable, airtableStatusToApp,
+  fetchAirtableRecords, fetchAirtableSchema, linkedRecordIds,
+  updateAirtableRecords
+} from "./airtable-sync.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -19,7 +24,7 @@ database.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL CHECK(role IN ('admin','program_manager','employee','external_partner')),
-    password_hash TEXT, is_active INTEGER NOT NULL DEFAULT 1
+    password_hash TEXT, is_active INTEGER NOT NULL DEFAULT 1, airtable_record_id TEXT
   );
   CREATE TABLE IF NOT EXISTS auth_sessions (
     token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -52,7 +57,8 @@ database.exec(`
     assigned_user_id TEXT REFERENCES users(id), status TEXT NOT NULL DEFAULT 'Not Started'
       CHECK(status IN ('Not Started','In Progress','Blocked','Completed')),
     priority TEXT NOT NULL DEFAULT 'Medium', due_date TEXT NOT NULL, due_date_override INTEGER NOT NULL DEFAULT 0,
-    milestone TEXT NOT NULL DEFAULT 'Planning', completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    milestone TEXT NOT NULL DEFAULT 'Planning', completed_at TEXT, airtable_record_id TEXT UNIQUE,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS task_dependencies (
     task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -72,6 +78,24 @@ database.exec(`
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), project_id TEXT REFERENCES projects(id),
     message TEXT NOT NULL, is_read INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS airtable_tables (
+    table_id TEXT PRIMARY KEY, table_name TEXT NOT NULL UNIQUE, fields_json TEXT NOT NULL,
+    synced_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS airtable_records (
+    table_id TEXT NOT NULL REFERENCES airtable_tables(table_id) ON DELETE CASCADE,
+    record_id TEXT NOT NULL, fields_json TEXT NOT NULL, synced_at TEXT NOT NULL,
+    PRIMARY KEY(table_id,record_id)
+  );
+  CREATE TABLE IF NOT EXISTS airtable_work_sync (
+    record_id TEXT PRIMARY KEY, remote_json TEXT NOT NULL, local_json TEXT NOT NULL,
+    synced_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS airtable_sync_conflicts (
+    record_id TEXT NOT NULL, field_name TEXT NOT NULL, local_json TEXT NOT NULL,
+    remote_json TEXT NOT NULL, detected_at TEXT NOT NULL,
+    PRIMARY KEY(record_id,field_name)
+  );
   CREATE INDEX IF NOT EXISTS task_project_idx ON tasks(project_id);
   CREATE INDEX IF NOT EXISTS task_assignee_idx ON tasks(assigned_user_id);
   CREATE INDEX IF NOT EXISTS activity_project_idx ON activity_logs(project_id,created_at);
@@ -79,6 +103,10 @@ database.exec(`
 const userColumns = new Set(database.prepare("PRAGMA table_info(users)").all().map((column) => column.name));
 if (!userColumns.has("password_hash")) database.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
 if (!userColumns.has("is_active")) database.exec("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
+if (!userColumns.has("airtable_record_id")) database.exec("ALTER TABLE users ADD COLUMN airtable_record_id TEXT");
+const taskColumns = new Set(database.prepare("PRAGMA table_info(tasks)").all().map((column) => column.name));
+if (!taskColumns.has("airtable_record_id")) database.exec("ALTER TABLE tasks ADD COLUMN airtable_record_id TEXT");
+database.exec("CREATE UNIQUE INDEX IF NOT EXISTS task_airtable_record_idx ON tasks(airtable_record_id) WHERE airtable_record_id IS NOT NULL");
 
 const nowISO = () => new Date().toISOString();
 const dateOnly = (date) => date.toISOString().slice(0, 10);
@@ -408,6 +436,320 @@ function resolveRoleAssignment(role, managerId) {
   return managerId;
 }
 
+const airtableConfig = () => ({
+  apiKey: process.env.AIRTABLE_API_KEY,
+  baseId: process.env.AIRTABLE_BASE_ID,
+  apiRoot: process.env.AIRTABLE_API_ROOT
+});
+const jsonValue = (value) => JSON.stringify(value ?? null);
+const normalizedDate = (value) => {
+  if (!value) return null;
+  const date = String(value).slice(0, 10);
+  return validateDate(date) ? date : null;
+};
+const firstNumber = (...values) => {
+  for (const value of values.flat(Infinity)) {
+    if (value === null || value === undefined || String(value).trim() === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+};
+const linkedIds = (fields, name) => linkedRecordIds(fields[name]);
+const fieldChoices = (table, fieldName) => table.fields.find((field) => field.name === fieldName)?.choices || [];
+function appStatusForProject(value) {
+  const status = String(value || "").toLowerCase();
+  if (status.includes("complete") || status.includes("done")) return "Completed";
+  if (status.includes("risk")) return "At Risk";
+  if (status.includes("track") || status.includes("active")) return "On Track";
+  return "Planning";
+}
+
+let airtableSyncInProgress = false;
+async function syncAirtableBase(user) {
+  if (airtableSyncInProgress) {
+    const error = new Error("An Airtable sync is already running. Wait for it to finish.");
+    error.status = 409;
+    throw error;
+  }
+  airtableSyncInProgress = true;
+  try {
+    return await runAirtableSync(user);
+  } finally {
+    airtableSyncInProgress = false;
+  }
+}
+
+async function runAirtableSync(user) {
+  const config = airtableConfig();
+  const schema = await fetchAirtableSchema(config);
+  const tablesByName = new Map(schema.map((table) => [table.name, table]));
+  const missingTables = AIRTABLE_TABLE_NAMES.filter((name) => !tablesByName.has(name));
+  if (missingTables.length) {
+    throw new Error(`The Airtable base is missing expected tables: ${missingTables.join(", ")}.`);
+  }
+  for (const required of [
+    ["Session", ["Session Name", "Start Date", "End Date", "Site"]],
+    ["Site", ["Program Name", "Program Location"]],
+    ["Steps", ["Unique", "Short Description", "Long Description", "Dependencies", "Days"]],
+    ["Users", ["Email Address", "First Name", "Last Name"]],
+    ["Work", ["Unique", "Steps", "Session", "Due Date", "Completed Date", "Status", "Assignee"]]
+  ]) {
+    const table = tablesByName.get(required[0]);
+    const names = new Set(table.fields.map((field) => field.name));
+    const missing = required[1].filter((field) => !names.has(field));
+    if (missing.length) throw new Error(`Airtable table "${required[0]}" is missing fields: ${missing.join(", ")}.`);
+  }
+
+  const recordsByTable = new Map();
+  for (const name of AIRTABLE_TABLE_NAMES) {
+    const table = tablesByName.get(name);
+    recordsByTable.set(name, await fetchAirtableRecords(config, table.id));
+  }
+  const recordMaps = new Map([...recordsByTable].map(([name, records]) =>
+    [name, new Map(records.map((record) => [record.id, record]))]));
+  const sessions = recordsByTable.get("Session");
+  const sites = recordMaps.get("Site");
+  const steps = recordMaps.get("Steps");
+  const airtableUsers = recordMaps.get("Users");
+  const workTable = tablesByName.get("Work");
+  const adminUser = database.prepare("SELECT id FROM users WHERE id=? AND is_active=1").get(user.id);
+  if (!adminUser) throw new Error("The current administrator account is not active.");
+
+  const syncTime = nowISO();
+  const syncedCounts = {};
+  const conflicts = [];
+  const outbound = [];
+  let outboundRecordCount = 0;
+  let importedProjectCount = 0;
+  const workRecords = recordsByTable.get("Work");
+  let importedTaskCount = 0;
+
+  const saveMetadata = database.prepare(`INSERT INTO airtable_tables(table_id,table_name,fields_json,synced_at)
+    VALUES(?,?,?,?) ON CONFLICT(table_id) DO UPDATE SET table_name=excluded.table_name,
+    fields_json=excluded.fields_json,synced_at=excluded.synced_at`);
+  const saveRecord = database.prepare(`INSERT INTO airtable_records(table_id,record_id,fields_json,synced_at)
+    VALUES(?,?,?,?) ON CONFLICT(table_id,record_id) DO UPDATE SET
+    fields_json=excluded.fields_json,synced_at=excluded.synced_at`);
+  database.exec("BEGIN");
+  try {
+    for (const name of AIRTABLE_TABLE_NAMES) {
+      const table = tablesByName.get(name);
+      saveMetadata.run(table.id, name, JSON.stringify(table.fields), syncTime);
+      const records = recordsByTable.get(name);
+      for (const record of records) saveRecord.run(table.id, record.id, JSON.stringify(record.fields || {}), syncTime);
+      syncedCounts[name] = records.length;
+    }
+
+    const updateUser = database.prepare("UPDATE users SET airtable_record_id=? WHERE lower(email)=lower(?)");
+    for (const record of airtableUsers.values()) {
+      const fields = record.fields || {};
+      const email = String(fields["Email Address"] || "").trim();
+      if (email) updateUser.run(record.id, email);
+    }
+
+    const upsertProject = database.prepare(`INSERT INTO projects
+      (id,name,description,program_type,location,host_organization,start_date,end_date,status,
+       project_manager_id,airtable_record_id,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(airtable_record_id) DO UPDATE SET name=excluded.name,description=excluded.description,
+      program_type=excluded.program_type,location=excluded.location,host_organization=excluded.host_organization,
+      start_date=excluded.start_date,end_date=excluded.end_date,status=excluded.status,updated_at=excluded.updated_at`);
+    const findProject = database.prepare("SELECT id,created_at FROM projects WHERE airtable_record_id=?");
+    const addProjectMember = database.prepare(`INSERT OR IGNORE INTO project_members(project_id,user_id,project_role)
+      VALUES(?,?,'Project Manager')`);
+    const siteValue = (site, field) => {
+      const value = site?.fields?.[field];
+      if (Array.isArray(value)) {
+        const first = value[0];
+        return first && typeof first === "object" ? String(first.name || "") : String(first || "");
+      }
+      return String(value || "");
+    };
+    const programs = recordMaps.get("Programs");
+    for (const record of sessions) {
+      const fields = record.fields || {};
+      const site = sites.get(linkedIds(fields, "Site")[0]);
+      const startDate = normalizedDate(fields["Start Date"]);
+      const duration = firstNumber(fields["Duration (Days)"]);
+      const endDate = normalizedDate(fields["End Date"])
+        || (startDate && duration !== null ? addDays(startDate, duration) : null);
+      if (!startDate || !endDate || endDate < startDate) continue;
+      const existing = findProject.get(record.id);
+      const id = existing?.id || randomUUID();
+      const sessionName = String(fields["Session Name"] || "").trim();
+      const linkedProgram = programs.get(linkedIds(site?.fields || {}, "Program Name")[0]);
+      const programName = String(linkedProgram?.fields?.Name || siteValue(site, "Program Name")).trim();
+      const projectName = programName && sessionName && programName !== sessionName
+        ? `${programName} · ${sessionName}`
+        : programName || sessionName || `Airtable session ${record.id}`;
+      const locationValue = fields["Program Location"] || siteValue(site, "Program Location")
+        || siteValue(site, "Region Site") || "Location not set";
+      const location = Array.isArray(locationValue) ? String(locationValue[0] || "Location not set") : String(locationValue);
+      upsertProject.run(id, projectName, "", "Community", location, "", startDate, endDate,
+        appStatusForProject(fields.Status), user.id, record.id, existing?.created_at || syncTime, syncTime);
+      addProjectMember.run(id, user.id);
+      importedProjectCount++;
+    }
+
+    const upsertTask = database.prepare(`INSERT INTO tasks
+      (id,project_id,template_task_id,title,description,assigned_user_id,status,priority,due_date,
+       milestone,completed_at,airtable_record_id,created_at,updated_at)
+      VALUES(?,?,NULL,?,?,?,?,'Medium',?,'Planning',?,?,?,?)
+      ON CONFLICT(airtable_record_id) DO UPDATE SET project_id=excluded.project_id,title=excluded.title,
+      description=excluded.description,assigned_user_id=excluded.assigned_user_id,status=excluded.status,
+      due_date=excluded.due_date,completed_at=excluded.completed_at,updated_at=excluded.updated_at`);
+    const getTask = database.prepare("SELECT * FROM tasks WHERE airtable_record_id=?");
+    const getProject = database.prepare("SELECT id,start_date FROM projects WHERE airtable_record_id=?");
+    const getUserByAirtableId = database.prepare("SELECT id FROM users WHERE airtable_record_id=? AND is_active=1");
+    const getAccountById = database.prepare("SELECT airtable_record_id FROM users WHERE id=?");
+    const saveShadow = database.prepare(`INSERT INTO airtable_work_sync(record_id,remote_json,local_json,synced_at)
+      VALUES(?,?,?,?) ON CONFLICT(record_id) DO UPDATE SET remote_json=excluded.remote_json,
+      local_json=excluded.local_json,synced_at=excluded.synced_at`);
+    const getShadow = database.prepare("SELECT remote_json,local_json FROM airtable_work_sync WHERE record_id=?");
+    const clearConflict = database.prepare("DELETE FROM airtable_sync_conflicts WHERE record_id=? AND field_name=?");
+    const saveConflict = database.prepare(`INSERT INTO airtable_sync_conflicts(record_id,field_name,local_json,remote_json,detected_at)
+      VALUES(?,?,?,?,?) ON CONFLICT(record_id,field_name) DO UPDATE SET local_json=excluded.local_json,
+      remote_json=excluded.remote_json,detected_at=excluded.detected_at`);
+    const workToTask = new Map();
+    const workLinkedStepIds = new Map();
+    const taskStepIds = new Map();
+    for (const record of workRecords) {
+      const fields = record.fields || {};
+      const sessionId = linkedIds(fields, "Session")[0];
+      const project = sessionId ? getProject.get(sessionId) : null;
+      const stepId = linkedIds(fields, "Steps")[0];
+      const step = stepId ? steps.get(stepId) : null;
+      if (!project || !step) continue;
+      const prior = getTask.get(record.id);
+      const shadow = getShadow.get(record.id);
+      const stepFields = step.fields || {};
+      const remote = {
+        status: airtableStatusToApp(fields.Status),
+        dueDate: normalizedDate(fields["Due Date"])
+          || addDays(project.start_date, firstNumber(fields["Days (from Steps)"], stepFields.Days) ?? 0),
+        completedAt: normalizedDate(fields["Completed Date"]),
+        assignee: linkedIds(fields, "Assignee")[0] || null
+      };
+      const priorRemote = shadow ? JSON.parse(shadow.remote_json) : null;
+      const priorLocal = shadow ? JSON.parse(shadow.local_json) : null;
+      let local = prior ? {
+        status: prior.status,
+        dueDate: prior.due_date,
+        completedAt: normalizedDate(prior.completed_at),
+        assignee: prior.assigned_user_id
+          ? getAccountById.get(prior.assigned_user_id)?.airtable_record_id || null
+          : null
+      } : { ...remote };
+
+      if (priorRemote && priorLocal) {
+        for (const field of ["status", "dueDate", "completedAt", "assignee"]) {
+          const remoteChanged = jsonValue(remote[field]) !== jsonValue(priorRemote[field]);
+          const localChanged = jsonValue(local[field]) !== jsonValue(priorLocal[field]);
+          if (remoteChanged && localChanged && jsonValue(remote[field]) !== jsonValue(local[field])) {
+            conflicts.push({ recordId: record.id, field, local: local[field], airtable: remote[field] });
+            saveConflict.run(record.id, field, jsonValue(local[field]), jsonValue(remote[field]), syncTime);
+            continue;
+          }
+          clearConflict.run(record.id, field);
+          if (localChanged && !remoteChanged) {
+            const values = remote[field] === local[field] ? null : local[field];
+            if (values !== null || (field === "completedAt" && local[field] === null)) {
+              const airtableField = {
+                status: "Status", dueDate: "Due Date", completedAt: "Completed Date", assignee: "Assignee"
+              }[field];
+              let value = values;
+              if (field === "status") value = appStatusToAirtable(local.status, fieldChoices(workTable, "Status"));
+              if (field === "assignee") value = local.assignee ? [{ id: local.assignee }] : [];
+              outbound.push({ id: record.id, fields: { [airtableField]: value } });
+              remote[field] = local[field];
+            }
+          } else if (remoteChanged && !localChanged) {
+            local[field] = remote[field];
+          }
+        }
+      } else {
+        clearConflict.run(record.id, "status");
+        clearConflict.run(record.id, "dueDate");
+        clearConflict.run(record.id, "completedAt");
+        clearConflict.run(record.id, "assignee");
+      }
+
+      const userId = local.assignee ? getUserByAirtableId.get(local.assignee)?.id || null : null;
+      const title = String(stepFields["Short Description"] || stepFields.Unique || fields.Unique || `Task ${record.id}`);
+      const description = String(stepFields["Long Description"] || stepFields["Short Description"] || "");
+      const taskId = prior?.id || randomUUID();
+      const completedAt = local.completedAt || (local.status === "Completed" ? syncTime : null);
+      upsertTask.run(taskId, project.id, title, description, userId, local.status, local.dueDate,
+        completedAt, record.id, prior?.created_at || syncTime, syncTime);
+      workToTask.set(record.id, taskId);
+      taskStepIds.set(taskId, stepId);
+      workLinkedStepIds.set(taskId, linkedIds(stepFields, "Dependencies"));
+      if (!priorRemote) {
+        local = {
+          status: local.status,
+          dueDate: local.dueDate,
+          completedAt: normalizedDate(completedAt),
+          assignee: userId ? getAccountById.get(userId)?.airtable_record_id || null : null
+        };
+        saveShadow.run(record.id, jsonValue(remote), jsonValue(local), syncTime);
+      } else if (!conflicts.some((conflict) => conflict.recordId === record.id)) {
+        const freshTask = getTask.get(record.id);
+        const syncedLocal = {
+          status: freshTask.status,
+          dueDate: freshTask.due_date,
+          completedAt: normalizedDate(freshTask.completed_at),
+          assignee: freshTask.assigned_user_id
+            ? getAccountById.get(freshTask.assigned_user_id)?.airtable_record_id || null
+            : null
+        };
+        saveShadow.run(record.id, jsonValue(remote), jsonValue(syncedLocal), syncTime);
+      }
+    }
+    const dependencyStepMap = new Map();
+    for (const [taskId, stepId] of taskStepIds) {
+      const work = workRecords.find((record) => workToTask.get(record.id) === taskId);
+      const sessionId = linkedIds(work?.fields || {}, "Session")[0];
+      dependencyStepMap.set(`${sessionId}:${stepId}`, taskId);
+    }
+    const replaceDependencies = database.prepare("DELETE FROM task_dependencies WHERE task_id=?");
+    const addDependency = database.prepare("INSERT OR IGNORE INTO task_dependencies(task_id,prerequisite_task_id) VALUES(?,?)");
+    for (const [taskId, dependencyIds] of workLinkedStepIds) {
+      replaceDependencies.run(taskId);
+      const work = workRecords.find((record) => workToTask.get(record.id) === taskId);
+      const sessionId = linkedIds(work?.fields || {}, "Session")[0];
+      for (const dependencyId of dependencyIds) {
+        const prerequisite = dependencyStepMap.get(`${sessionId}:${dependencyId}`);
+        if (prerequisite && prerequisite !== taskId) addDependency.run(taskId, prerequisite);
+      }
+    }
+    importedTaskCount = workToTask.size;
+    if (outbound.length) {
+      const byRecordId = new Map();
+      for (const update of outbound) {
+        const merged = byRecordId.get(update.id) || { id: update.id, fields: {} };
+        Object.assign(merged.fields, update.fields);
+        byRecordId.set(update.id, merged);
+      }
+      const outboundRecords = [...byRecordId.values()];
+      await updateAirtableRecords(config, workTable.id, outboundRecords);
+      outboundRecordCount = outboundRecords.length;
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+
+  return {
+    tables: syncedCounts,
+    projects: importedProjectCount,
+    tasks: importedTaskCount,
+    updatedWorkRecords: outboundRecordCount,
+    conflicts
+  };
+}
+
 async function handleApi(request, response, url) {
   const path = url.pathname;
   if (request.method === "GET" && path === "/api/auth/config") {
@@ -448,6 +790,9 @@ async function handleApi(request, response, url) {
   const user = getCurrentUser(request);
   if (authRequired && !user) return send(response, 401, { error: "Sign in to continue." });
   if (authRequired && !verifySameOrigin(request)) return send(response, 403, { error: "Request origin was not allowed." });
+  if (airtableSyncInProgress && path !== "/api/auth/config") {
+    return send(response, 409, { error: "Airtable sync is in progress. Try again shortly." });
+  }
   if (request.method === "POST" && path === "/api/auth/logout") {
     const token = readCookie(request, "nmu_session");
     if (token) database.prepare("DELETE FROM auth_sessions WHERE token_hash=?").run(hashSessionToken(token));
@@ -532,7 +877,11 @@ async function handleApi(request, response, url) {
       users: database.prepare("SELECT id,name,role FROM users WHERE is_active=1 ORDER BY name").all(),
       projects, tasks, notifications,
       templates: database.prepare("SELECT id,name,program_type AS programType,description FROM templates ORDER BY name").all(),
-      integration: { airtableConfigured: Boolean(process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) },
+      integration: {
+        airtableConfigured: Boolean(process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID),
+        airtableTablesSynced: database.prepare("SELECT COUNT(*) AS count FROM airtable_tables").get().count,
+        airtableLastSync: database.prepare("SELECT MAX(synced_at) AS synced_at FROM airtable_tables").get().synced_at
+      },
       visibleProjectCount: visibleIds.size
     });
   }
@@ -744,6 +1093,29 @@ async function handleApi(request, response, url) {
     const notificationId = decodeURIComponent(path.slice("/api/notifications/".length));
     const result = database.prepare("UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?").run(notificationId, user.id);
     return result.changes ? send(response, 200, { ok: true }) : send(response, 404, { error: "Notification not found." });
+  }
+  if (request.method === "GET" && path === "/api/integrations/airtable/schema") {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can inspect the Airtable connection." });
+    try {
+      const tables = await fetchAirtableSchema(airtableConfig());
+      const names = new Set(tables.map((table) => table.name));
+      return send(response, 200, {
+        tables,
+        missingTables: AIRTABLE_TABLE_NAMES.filter((name) => !names.has(name))
+      });
+    } catch (error) {
+      return send(response, error.status === 401 || error.status === 403 ? 502 : 503, { error: error.message });
+    }
+  }
+  if (request.method === "POST" && path === "/api/integrations/airtable/sync") {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can synchronize Airtable." });
+    try {
+      const result = await syncAirtableBase(user);
+      return send(response, 200, result);
+    } catch (error) {
+      console.error(`Airtable sync failed: ${error.message}`);
+      return send(response, error.status === 401 || error.status === 403 ? 502 : error.status || 503, { error: error.message });
+    }
   }
   if (request.method === "POST" && path === "/api/integrations/airtable/import") {
     if (!["admin", "program_manager"].includes(user.role)) return send(response, 403, { error: "Only management can import Airtable programs." });

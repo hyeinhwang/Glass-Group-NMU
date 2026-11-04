@@ -18,7 +18,7 @@ From the repository root, `npm start` starts the app and `npm test` runs its wor
 
 ## Airtable
 
-The app supports a server-side, one-way Airtable program import. Setup, field mapping, demo roles, data model, and prototype limitations are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code.
+The app supports an administrator-triggered sync of all 12 NMU Airtable tables. Airtable owns reference/setup data; the app writes only the approved task status/date/assignee fields back to linked `Work` records. Airtable permissions, sync behavior, and conflict handling are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code.
 
 ## Railway deployment and team access
 

@@ -1,6 +1,7 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -233,7 +234,7 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       cwd: projectRoot,
       env: {
         ...process.env, NODE_ENV: "production", NMU_AUTH_MODE: "required",
-        NMU_ADMIN_EMAIL: adminEmail, NMU_ADMIN_PASSWORD: adminPassword,
+        NMU_ADMIN_EMAIL: adminEmail, NMU_ADMIN_PASSWORD: adminPassword, NMU_ADMIN_NAME: "Initial Admin",
         NMU_DATABASE_PATH: join(authDirectory, "production.sqlite"), PORT: String(authPort)
       },
       stdio: ["ignore", "pipe", "pipe"]
@@ -357,6 +358,178 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
         authServer.kill("SIGTERM");
         await new Promise((resolve) => authServer.once("exit", resolve));
       }
+      await rm(authDirectory, { recursive: true, force: true });
+    }
+  });
+
+  await t.test("syncs linked Airtable tables and writes only approved Work fields", async () => {
+    const adminEmail = "airtable-admin@nmu.test";
+    const adminPassword = "airtable-admin-password-2026";
+    const tableNames = ["Users", "Templates", "Template List", "Roles", "Steps", "Programs", "Region", "Site", "Session", "Instructors", "Work", "WIP"];
+    const tableIds = new Map(tableNames.map((name, index) => [name, `tbl${index + 1}`]));
+    const link = (name, target) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "multipleRecordLinks", options: { linkedTableId: tableIds.get(target) } });
+    const text = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "singleLineText", options: {} });
+    const dateField = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "date", options: {} });
+    const numberField = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "number", options: {} });
+    const statusField = { id: "fldStatus", name: "Status", type: "singleSelect", options: { choices: ["Not Started", "In Progress", "Done"].map((name) => ({ name })) } };
+    const schemaFields = new Map([
+      ["Users", [text("Email Address"), text("First Name"), text("Last Name"), link("Roles", "Roles")]],
+      ["Templates", [text("Name")]],
+      ["Template List", [text("List Name (Unique)"), dateField("Created"), statusField, link("Steps", "Steps")]],
+      ["Roles", [text("Role Name"), statusField, link("Users", "Users"), link("Steps", "Steps"), link("Templates", "Templates")]],
+      ["Steps", [text("Unique"), text("Short Description"), text("Long Description"), link("Dependencies", "Steps"), numberField("Days"), link("Template", "Templates"), link("Roles", "Roles")]],
+      ["Programs", [text("Name")]],
+      ["Region", [text("Name"), link("Site", "Site")]],
+      ["Site", [text("Program Name"), link("Region", "Region"), link("Session", "Session"), text("Region Site"), text("Program Location"), link("Instructors", "Instructors"), link("Work", "Work")]],
+      ["Session", [text("Session Name"), dateField("Start Date"), numberField("Duration (Days)"), dateField("End Date"), link("Site", "Site"), text("Region Site Session"), statusField, numberField("Program Hours"), link("Instructors", "Instructors"), link("Work", "Work")]],
+      ["Instructors", [text("Instructor Name"), link("Site", "Site"), text("Email"), link("Session", "Session")]],
+      ["Work", [text("Unique"), text("Notes"), link("Steps", "Steps"), link("Session", "Session"), numberField("Days (from Steps)"), dateField("Start Date (from Session)"), dateField("Due Date"), dateField("Completed Date"), statusField, link("Assignee", "Users")]],
+      ["WIP", [text("Name")]]
+    ]);
+    const airtableRows = new Map(tableNames.map((name) => [name, []]));
+    airtableRows.set("Users", [{ id: "recAdmin", fields: { "Email Address": adminEmail, "First Name": "Initial", "Last Name": "Admin" } }]);
+    airtableRows.set("Site", [{ id: "recSite", fields: { "Program Name": "Regional Swim", "Program Location": "Everett, WA" } }]);
+    airtableRows.set("Session", [{ id: "recSession", fields: {
+      "Session Name": "Winter Session", "Start Date": "2027-01-01", "Duration (Days)": 7,
+      Site: [{ id: "recSite" }], Status: "Planning"
+    } }]);
+    airtableRows.set("Steps", [{ id: "recStep", fields: {
+      Unique: "Confirm the host", "Short Description": "Confirm the host.", "Long Description": "Agree on the pool schedule.",
+      Days: -5, Dependencies: []
+    } }]);
+    airtableRows.set("Work", [{ id: "recWork", fields: {
+      Unique: "winter-host", Steps: [{ id: "recStep" }], Session: [{ id: "recSession" }],
+      "Days (from Steps)": -5, "Due Date": "2026-12-27", "Completed Date": null,
+      Status: "Not Started", Assignee: [{ id: "recAdmin" }]
+    } }]);
+    const patchCalls = [];
+    const mockAirtable = createHttpServer(async (request, response) => {
+      const url = new URL(request.url, "http://localhost");
+      const json = (status, body) => {
+        response.writeHead(status, { "content-type": "application/json" });
+        response.end(JSON.stringify(body));
+      };
+      if (url.pathname === "/v0/meta/bases/appMock/tables") {
+        return json(200, { tables: tableNames.map((name) => ({
+          id: tableIds.get(name), name,
+          fields: schemaFields.get(name).map((field) => ({ ...field, options: {
+            ...field.options, linkedTableId: field.options?.linkedTableId
+          } }))
+        })) });
+      }
+      const [, version, baseId, tableId] = url.pathname.split("/");
+      const tableName = [...tableIds].find(([, id]) => id === decodeURIComponent(tableId))?.[0];
+      if (version !== "v0" || baseId !== "appMock" || !tableName) return json(404, { error: "Not found" });
+      if (request.method === "GET") return json(200, { records: airtableRows.get(tableName) });
+      if (request.method === "PATCH" && tableName === "Work") {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        const updates = JSON.parse(body).records;
+        patchCalls.push(...updates);
+        for (const update of updates) {
+          const record = airtableRows.get("Work").find((item) => item.id === update.id);
+          Object.assign(record.fields, update.fields);
+        }
+        return json(200, { records: updates.map((update) => ({
+          id: update.id, fields: airtableRows.get("Work").find((item) => item.id === update.id).fields
+        })) });
+      }
+      return json(405, { error: "Method not allowed" });
+    });
+    await new Promise((resolve) => mockAirtable.listen(0, "127.0.0.1", resolve));
+    const mockPort = mockAirtable.address().port;
+    const authDirectory = await mkdtemp(join(tmpdir(), "nmu-airtable-test-"));
+    const authPort = await availablePort();
+    const authUrl = `http://127.0.0.1:${authPort}`;
+    const authServer = spawn(process.execPath, ["server.js"], {
+      cwd: projectRoot,
+      env: {
+        ...process.env, NODE_ENV: "production", NMU_AUTH_MODE: "required",
+        NMU_ADMIN_EMAIL: adminEmail, NMU_ADMIN_PASSWORD: adminPassword, NMU_ADMIN_NAME: "Initial Admin",
+        AIRTABLE_API_KEY: "test-token", AIRTABLE_BASE_ID: "appMock",
+        AIRTABLE_API_ROOT: `http://127.0.0.1:${mockPort}/v0`,
+        NMU_DATABASE_PATH: join(authDirectory, "airtable.sqlite"), PORT: String(authPort)
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let serverOutput = "";
+    authServer.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
+    authServer.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
+    const authRequest = async (path, { method = "GET", cookie = "", body } = {}) => {
+      const response = await fetch(`${authUrl}${path}`, {
+        method,
+        headers: {
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...(cookie ? { cookie } : {}),
+          origin: authUrl
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      });
+      return {
+        status: response.status,
+        body: await response.json().catch(() => ({})),
+        setCookie: response.headers.get("set-cookie") || ""
+      };
+    };
+    try {
+      let ready = false;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (authServer.exitCode !== null) throw new Error(`Airtable test server exited early:\n${serverOutput}`);
+        try {
+          if ((await fetch(`${authUrl}/api/auth/config`)).ok) { ready = true; break; }
+        } catch {}
+        await delay(100);
+      }
+      assert.equal(ready, true, `Airtable test server did not start:\n${serverOutput}`);
+      const login = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: adminEmail, password: adminPassword }
+      });
+      assert.equal(login.status, 200);
+      const cookie = login.setCookie.split(";")[0];
+      const schema = await authRequest("/api/integrations/airtable/schema", { cookie });
+      assert.equal(schema.status, 200);
+      assert.equal(schema.body.tables.length, 12);
+      const firstSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
+      assert.equal(firstSync.status, 200, JSON.stringify(firstSync.body));
+      assert.equal(firstSync.body.projects, 1);
+      assert.equal(firstSync.body.tasks, 1);
+      assert.equal(firstSync.body.updatedWorkRecords, 0);
+      const bootstrap = await authRequest("/api/bootstrap", { cookie });
+      assert.equal(bootstrap.body.projects[0].name, "Regional Swim · Winter Session");
+      assert.equal(bootstrap.body.projects[0].location, "Everett, WA");
+      assert.equal(bootstrap.body.tasks[0].title, "Confirm the host.");
+      assert.equal(bootstrap.body.tasks[0].assigneeName, "Initial Admin");
+
+      const taskId = bootstrap.body.tasks[0].id;
+      const localUpdate = await authRequest(`/api/tasks/${taskId}/status`, {
+        method: "PATCH", cookie, body: { status: "Completed" }
+      });
+      assert.equal(localUpdate.status, 200);
+      const outboundSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
+      assert.equal(outboundSync.status, 200);
+      assert.equal(outboundSync.body.updatedWorkRecords, 1);
+      assert.deepEqual(Object.keys(patchCalls[0].fields).sort(), ["Completed Date", "Status"]);
+      assert.equal(patchCalls[0].fields.Status, "Done");
+      assert.ok(patchCalls[0].fields["Completed Date"]);
+      assert.equal(airtableRows.get("Work")[0].fields.Status, "Done");
+
+      const localConflict = await authRequest(`/api/tasks/${taskId}/status`, {
+        method: "PATCH", cookie, body: { status: "Not Started" }
+      });
+      assert.equal(localConflict.status, 200);
+      airtableRows.get("Work")[0].fields.Status = "In Progress";
+      airtableRows.get("Work")[0].fields["Completed Date"] = null;
+      const conflictSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
+      assert.equal(conflictSync.status, 200);
+      assert.equal(conflictSync.body.conflicts.length, 1);
+      assert.equal(conflictSync.body.conflicts[0].field, "status");
+      assert.equal(conflictSync.body.updatedWorkRecords, 0);
+    } finally {
+      if (authServer.exitCode === null) {
+        authServer.kill("SIGTERM");
+        await new Promise((resolve) => authServer.once("exit", resolve));
+      }
+      await new Promise((resolve, reject) => mockAirtable.close((error) => error ? reject(error) : resolve()));
       await rm(authDirectory, { recursive: true, force: true });
     }
   });

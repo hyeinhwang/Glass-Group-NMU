@@ -2,7 +2,7 @@ const state = {
   page: "overview", userId: localStorage.getItem("nmu-demo-user") || "u-catalina",
   data: null, projectId: null, projectTab: "overview", projectSearch: "", projectStatus: "all",
   taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks", authRequired: false,
-  administratorConfigured: false, accountUsers: []
+  administratorConfigured: false, accountUsers: [], airtableSync: null
 };
 const content = document.getElementById("content");
 const modalRoot = document.getElementById("modal-root");
@@ -210,17 +210,22 @@ function renderNotifications() {
 }
 function renderSettings() {
   const connected = state.data.integration.airtableConfigured;
+  const lastSync = state.data.integration.airtableLastSync;
+  const syncStatus = lastSync
+    ? `${state.data.integration.airtableTablesSynced} Airtable tables synced · ${new Date(lastSync).toLocaleString()}`
+    : "Airtable has not been synced to this workspace yet.";
   const accountManager = state.authRequired && isAdmin() ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">TEAM ACCESS</div><h2>Manage team accounts</h2><p>Create individual accounts with the least-privilege role they need. Share temporary passwords privately; teammates can change their password after signing in.</p>
       <form id="create-user-form"><div class="form-grid">${formField("Full name","newUserName","text",{required:true})}${formField("Email address","newUserEmail","email",{required:true})}${formField("Role","newUserRole","select",{required:true,choices:[["employee","Employee"],["program_manager","Program Manager"],["admin","Administrator"],["external_partner","External Partner"]]})}${formField("Temporary password (12+ characters)","newUserPassword","password",{required:true,placeholder:"Share separately and privately"})}</div><button class="button primary" type="submit" style="margin-top:12px">Create account</button></form>
       <div class="table-wrap" style="margin-top:18px"><table class="project-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>${state.accountUsers.map((account)=>`<tr><td>${escapeHtml(account.name)}</td><td>${escapeHtml(account.email)}</td><td>${escapeHtml(account.role.replaceAll("_"," "))}</td><td>${account.active?"Active":"Disabled"}</td><td>${account.id===state.data.currentUser.id?"You":`<button class="text-action" data-account-toggle="${escapeHtml(account.id)}" data-active="${account.active?"false":"true"}">${account.active?"Disable":"Enable"}</button>`}</td></tr>`).join("")}</tbody></table></div>
     </section>` : "";
   const passwordSettings = state.authRequired ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">ACCOUNT SECURITY</div><h2>Change your password</h2><form id="change-password-form"><div class="form-grid">${formField("Current password","currentPassword","password",{required:true})}${formField("New password (12+ characters)","newPassword","password",{required:true})}${formField("Confirm new password","confirmPassword","password",{required:true})}</div><button class="button primary" type="submit" style="margin-top:12px">Update password</button></form></section>` : "";
-  const airtableSettings = isManager() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable integration", "Import existing NMU program records into this workspace. The app is the source of truth for task status; the current integration is one-way only.")}
-    <section class="integration-panel"><div class="eyebrow">AIRTABLE · ONE-WAY IMPORT</div><h2>Bring program records into NMU</h2><p>Connect an Airtable Personal Access Token and a base with a program table. The token stays on the server and is never sent to this browser. Imports create or update program records only—tasks are managed in this app.</p>
-      <div class="integration-callout ${connected?"":"warning"}">${connected?"Airtable credentials are configured on the server. You can run an import when ready.":"Airtable is not connected yet. Add the configuration in the project’s server environment, then restart the app."}</div>
-      <p><b>Configuration:</b> copy <span class="code">.env.example</span> to <span class="code">.env</span>, then set <span class="code">AIRTABLE_API_KEY</span>, <span class="code">AIRTABLE_BASE_ID</span>, <span class="code">AIRTABLE_PROJECTS_TABLE</span>, and <span class="code">AIRTABLE_FIELD_MAPPING</span>. Map exact Airtable field labels to app fields: <span class="code">name</span>, <span class="code">location</span>, <span class="code">startDate</span>, <span class="code">endDate</span>, <span class="code">description</span>, <span class="code">programType</span>, <span class="code">hostOrganization</span>.</p>
-      <p><b>Required Airtable fields:</b> program name, location, start date, and end date (end date can use the start date mapping if your base has no end date). Records missing required values are skipped and counted in the import result.</p>
-      <button class="button primary" data-action="airtable-import" ${connected?"":"disabled"}>↗ Import programs from Airtable</button>
+  const airtableSettings = isAdmin() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable integration", "Sync the linked NMU base into the workspace and send approved Work updates back to Airtable.")}
+    <section class="integration-panel"><div class="eyebrow">AIRTABLE · LINKED TABLE SYNC</div><h2>Synchronize NMU data</h2><p>Sync imports and updates records from all 12 schema tables, preserving Airtable record IDs and linked fields. Sessions appear as programs and linked Work records appear as tasks.</p>
+      <div class="integration-callout ${connected?"":"warning"}">${connected?escapeHtml(syncStatus):"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
+      <p><b>Ownership:</b> Airtable owns reference and setup data. The app writes only <span class="code">Status</span>, <span class="code">Due Date</span>, <span class="code">Completed Date</span>, and <span class="code">Assignee</span> on already-linked <span class="code">Work</span> rows. Other Work fields and linked/reference tables are read-only to the app. No records are automatically deleted, and simultaneous edits are reported as conflicts rather than overwritten.</p>
+      <p><b>Access:</b> the server token needs <span class="code">schema.bases:read</span>, <span class="code">data.records:read</span>, and <span class="code">data.records:write</span> access to this base. Keep it in Railway Variables; never put it in the browser or GitHub.</p>
+      <div class="heading-actions"><button class="button ghost" data-action="airtable-check" ${connected?"":"disabled"}>Check schema access</button><button class="button primary" data-action="airtable-sync" ${connected?"":"disabled"}>↻ Sync all Airtable tables</button></div>
+      ${state.airtableSync?`<div class="integration-callout ${state.airtableSync.conflicts?.length?"warning":""}" style="margin-top:14px">Last sync: ${Object.values(state.airtableSync.tables||{}).reduce((sum,count)=>sum+count,0)} records across ${Object.keys(state.airtableSync.tables||{}).length} tables; ${state.airtableSync.updatedWorkRecords||0} Work records written to Airtable; ${state.airtableSync.conflicts?.length||0} conflicts need review.</div>${state.airtableSync.conflicts?.length?`<ul>${state.airtableSync.conflicts.map((item)=>`<li>${escapeHtml(item.recordId)} · ${escapeHtml(item.field)} differs between the app (${escapeHtml(item.local)}) and Airtable (${escapeHtml(item.airtable)}).</li>`).join("")}</ul>`:""}`:""}
     </section>` : pageHeading("ACCOUNT SETTINGS", "Your account", "Manage your sign-in details.");
   return `${airtableSettings}
     ${accountManager}
@@ -300,7 +305,9 @@ function render() {
   document.getElementById("notification-indicator").classList.toggle("hidden",!unread);
   const integration = document.querySelector(".integration-status");
   integration.classList.toggle("connected",state.data.integration.airtableConfigured);
-  document.getElementById("airtable-status").textContent = state.data.integration.airtableConfigured?"Ready to import":"Not connected";
+  document.getElementById("airtable-status").textContent = state.data.integration.airtableLastSync
+    ? "Synced"
+    : state.data.integration.airtableConfigured ? "Configured" : "Not connected";
   document.getElementById("crumb-current").textContent = state.page.replaceAll("-"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase());
   document.querySelectorAll(".nav-link").forEach((item)=>item.classList.toggle("active",item.dataset.nav===state.page&&!state.projectId));
   if (state.projectId && state.projectData) return renderProjectPage();
@@ -419,15 +426,25 @@ async function showReplan() {
   });
   update();
 }
-async function importAirtable(button) {
+async function checkAirtableSchema(button) {
   button.disabled = true;
-  button.textContent = "Importing…";
+  button.textContent = "Checking…";
   try {
-    const result = await api("/api/integrations/airtable/import",{method:"POST",body:"{}"});
-    await refresh();
-    showToast(`Airtable import complete: ${result.imported} new, ${result.updated} updated, ${result.skipped} skipped.`);
+    const result = await api("/api/integrations/airtable/schema");
+    if(result.missingTables.length) showToast(`Schema access works, but these tables are missing: ${result.missingTables.join(", ")}.`,true);
+    else showToast(`Airtable schema access verified: ${result.tables.length} tables found.`);
   } catch(error) { showToast(error.message,true); }
-  finally { if(button.isConnected){button.disabled=false;button.textContent="↗ Import programs from Airtable";} }
+  finally { if(button.isConnected){button.disabled=false;button.textContent="Check schema access";} }
+}
+async function syncAirtable(button) {
+  button.disabled = true;
+  button.textContent = "Syncing…";
+  try {
+    state.airtableSync = await api("/api/integrations/airtable/sync",{method:"POST",body:"{}"});
+    await refresh();
+    showToast(`Airtable sync complete: ${Object.keys(state.airtableSync.tables).length} tables; ${state.airtableSync.updatedWorkRecords} Work updates written; ${state.airtableSync.conflicts.length} conflicts.`);
+  } catch(error) { showToast(error.message,true); }
+  finally { if(button.isConnected){button.disabled=false;button.textContent="↻ Sync all Airtable tables";} }
 }
 document.addEventListener("click",async(event)=>{
   const nav = event.target.closest("[data-nav]");
@@ -468,7 +485,8 @@ document.addEventListener("click",async(event)=>{
     else if (action.dataset.action==="create-project") showProjectForm();
     else if (action.dataset.action==="replan") showReplan();
     else if (action.dataset.action==="close-modal") modalRoot.innerHTML="";
-    else if (action.dataset.action==="airtable-import") await importAirtable(action);
+    else if (action.dataset.action==="airtable-check") await checkAirtableSchema(action);
+    else if (action.dataset.action==="airtable-sync") await syncAirtable(action);
     else if (action.dataset.action==="mark-all-read") {
       for (const notification of state.data.notifications.filter((item)=>!item.isRead)) {
         try { await api(`/api/notifications/${encodeURIComponent(notification.id)}`,{method:"PATCH"}); } catch(error) { showToast(error.message,true); return; }
