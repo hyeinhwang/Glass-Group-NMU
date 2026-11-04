@@ -272,3 +272,13 @@ h1 { margin-bottom: 7px; color: #193d40; font: 700 27px/1.2 "Manrope", sans-seri
   .activity-item { grid-template-columns: 9px minmax(0,1fr); }
   .activity-item time { grid-column: 2; }
 }
+.auth-screen .sidebar,.auth-screen .topbar,.auth-screen .mobile-bottom { display: none; }
+.auth-screen .shell { display: block; min-height: 100vh; }
+.auth-screen .main { display: grid; min-height: 100vh; place-items: center; }
+.auth-screen .content { width: min(440px,100%); padding: 22px; }
+.login-card { display: grid; gap: 14px; padding: 29px; border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: var(--shadow); }
+.login-card .brand-symbol { margin-bottom: 4px; }
+.login-card h1 { margin: 0; font-size: 23px; }
+.login-card .heading-copy { margin-top: -7px; }
+.login-card form { display: grid; gap: 13px; margin-top: 5px; }
+.login-card .button { width: 100%; margin-top: 2px; }

@@ -20,4 +20,10 @@ From the repository root, `npm start` starts the app and `npm test` runs its wor
 
 The app supports a server-side, one-way Airtable program import. Setup, field mapping, demo roles, data model, and prototype limitations are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code.
 
-All seeded program records and people are demonstration data, not verified NMU records. Demo identity switching is not production authentication.
+## Railway deployment and team access
+
+For Railway, keep the service Root Directory at the repository root so Railpack uses this repository's `package.json`. Configure `NMU_AUTH_MODE=required`, `NMU_ADMIN_EMAIL`, and a private `NMU_ADMIN_PASSWORD` of at least 12 characters in Railway Variables before deploying. Optionally set `NMU_ADMIN_NAME`. The app creates the initial administrator on first startup; the administrator can then add individual teammate accounts in Settings. Do not commit credentials or share passwords in GitHub.
+
+Attach a persistent Railway volume and set `NMU_DATABASE_PATH` to a file on that volume before relying on database changes. The app uses single-instance SQLite; review the app README before importing real operational data.
+
+All seeded program records and people are demonstration data, not verified NMU records. Local demo identity switching is not used when authentication is required.

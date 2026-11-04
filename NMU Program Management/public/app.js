@@ -1,7 +1,8 @@
 const state = {
   page: "overview", userId: localStorage.getItem("nmu-demo-user") || "u-catalina",
   data: null, projectId: null, projectTab: "overview", projectSearch: "", projectStatus: "all",
-  taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks"
+  taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks", authRequired: false,
+  administratorConfigured: false, accountUsers: []
 };
 const content = document.getElementById("content");
 const modalRoot = document.getElementById("modal-root");
@@ -31,13 +32,12 @@ function showToast(message, error = false) {
   showToast.timeout = setTimeout(() => toastEl.classList.remove("show"), 3200);
 }
 async function api(path, options = {}) {
+  const headers = { "content-type": "application/json", ...(options.headers || {}) };
+  if (!state.authRequired) headers["x-demo-user"] = state.userId;
   const response = await fetch(path, {
     ...options,
-    headers: {
-      "content-type": "application/json",
-      "x-demo-user": state.userId,
-      ...(options.headers || {})
-    }
+    credentials: "same-origin",
+    headers
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -50,11 +50,33 @@ async function api(path, options = {}) {
 }
 async function refresh() {
   try {
+    const config = await api("/api/auth/config");
+    state.authRequired = config.required;
+    state.administratorConfigured = config.administratorConfigured;
     state.data = await api("/api/bootstrap");
+    if (state.authRequired) state.userId = state.data.currentUser.id;
+    state.accountUsers = state.authRequired && state.data.currentUser.role === "admin"
+      ? (await api("/api/users")).users
+      : [];
+    document.body.classList.remove("auth-screen");
     render();
   } catch (error) {
+    if (state.authRequired && error.message === "Sign in to continue.") {
+      state.data = null;
+      renderLogin();
+      return;
+    }
     content.innerHTML = `<div class="inline-error">Could not load the workspace: ${escapeHtml(error.message)}</div>`;
   }
+}
+function renderLogin(message = "") {
+  document.body.classList.add("auth-screen");
+  modalRoot.innerHTML = "";
+  content.innerHTML = `<section class="login-card" aria-labelledby="login-title"><div class="brand-symbol">n</div><div class="eyebrow">NMU PROGRAM OPERATIONS</div><h1 id="login-title">Sign in to your workspace</h1><p class="heading-copy">Use the NMU account created for you by an administrator.</p>
+    ${!state.administratorConfigured?`<div class="inline-error">No administrator account is configured yet. Set <span class="code">NMU_ADMIN_EMAIL</span> and <span class="code">NMU_ADMIN_PASSWORD</span> in Railway Variables, then redeploy.</div>`:""}
+    ${message?`<div class="inline-error">${escapeHtml(message)}</div>`:""}
+    <form id="login-form"><div class="form-field"><label for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="username" required></div><div class="form-field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div><button class="button primary" type="submit" ${state.administratorConfigured?"":"disabled"}>Sign in</button></form>
+  </section>`;
 }
 function setNavigation(page) {
   state.page = page;
@@ -188,14 +210,22 @@ function renderNotifications() {
 }
 function renderSettings() {
   const connected = state.data.integration.airtableConfigured;
-  return `${pageHeading("WORKSPACE SETTINGS", "Airtable integration", "Import existing NMU program records into this workspace. The app is the source of truth for task status; the current integration is one-way only.")}
+  const accountManager = state.authRequired && isAdmin() ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">TEAM ACCESS</div><h2>Manage team accounts</h2><p>Create individual accounts with the least-privilege role they need. Share temporary passwords privately; teammates can change their password after signing in.</p>
+      <form id="create-user-form"><div class="form-grid">${formField("Full name","newUserName","text",{required:true})}${formField("Email address","newUserEmail","email",{required:true})}${formField("Role","newUserRole","select",{required:true,choices:[["employee","Employee"],["program_manager","Program Manager"],["admin","Administrator"],["external_partner","External Partner"]]})}${formField("Temporary password (12+ characters)","newUserPassword","password",{required:true,placeholder:"Share separately and privately"})}</div><button class="button primary" type="submit" style="margin-top:12px">Create account</button></form>
+      <div class="table-wrap" style="margin-top:18px"><table class="project-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>${state.accountUsers.map((account)=>`<tr><td>${escapeHtml(account.name)}</td><td>${escapeHtml(account.email)}</td><td>${escapeHtml(account.role.replaceAll("_"," "))}</td><td>${account.active?"Active":"Disabled"}</td><td>${account.id===state.data.currentUser.id?"You":`<button class="text-action" data-account-toggle="${escapeHtml(account.id)}" data-active="${account.active?"false":"true"}">${account.active?"Disable":"Enable"}</button>`}</td></tr>`).join("")}</tbody></table></div>
+    </section>` : "";
+  const passwordSettings = state.authRequired ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">ACCOUNT SECURITY</div><h2>Change your password</h2><form id="change-password-form"><div class="form-grid">${formField("Current password","currentPassword","password",{required:true})}${formField("New password (12+ characters)","newPassword","password",{required:true})}${formField("Confirm new password","confirmPassword","password",{required:true})}</div><button class="button primary" type="submit" style="margin-top:12px">Update password</button></form></section>` : "";
+  const airtableSettings = isManager() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable integration", "Import existing NMU program records into this workspace. The app is the source of truth for task status; the current integration is one-way only.")}
     <section class="integration-panel"><div class="eyebrow">AIRTABLE · ONE-WAY IMPORT</div><h2>Bring program records into NMU</h2><p>Connect an Airtable Personal Access Token and a base with a program table. The token stays on the server and is never sent to this browser. Imports create or update program records only—tasks are managed in this app.</p>
       <div class="integration-callout ${connected?"":"warning"}">${connected?"Airtable credentials are configured on the server. You can run an import when ready.":"Airtable is not connected yet. Add the configuration in the project’s server environment, then restart the app."}</div>
       <p><b>Configuration:</b> copy <span class="code">.env.example</span> to <span class="code">.env</span>, then set <span class="code">AIRTABLE_API_KEY</span>, <span class="code">AIRTABLE_BASE_ID</span>, <span class="code">AIRTABLE_PROJECTS_TABLE</span>, and <span class="code">AIRTABLE_FIELD_MAPPING</span>. Map exact Airtable field labels to app fields: <span class="code">name</span>, <span class="code">location</span>, <span class="code">startDate</span>, <span class="code">endDate</span>, <span class="code">description</span>, <span class="code">programType</span>, <span class="code">hostOrganization</span>.</p>
       <p><b>Required Airtable fields:</b> program name, location, start date, and end date (end date can use the start date mapping if your base has no end date). Records missing required values are skipped and counted in the import result.</p>
       <button class="button primary" data-action="airtable-import" ${connected?"":"disabled"}>↗ Import programs from Airtable</button>
-    </section>
-    <section class="integration-panel" style="margin-top:14px"><div class="eyebrow">DEMO IDENTITY</div><h2>Switch demonstration account</h2><p>Use the account menu in the top bar to preview management, program manager, employee, and partner experiences. This is demo identity switching, not production authentication.</p><div class="integration-callout warning">Before public hosting, add real sign-in, secure sessions, CSRF protections, and role administration. Never use demo identity headers for a live deployment.</div></section>`;
+    </section>` : pageHeading("ACCOUNT SETTINGS", "Your account", "Manage your sign-in details.");
+  return `${airtableSettings}
+    ${accountManager}
+    ${passwordSettings}
+    ${!state.authRequired?`<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">DEMO IDENTITY</div><h2>Switch demonstration account</h2><p>Use the account menu in the top bar to preview management, program manager, employee, and partner experiences. This is demo identity switching, not production authentication.</p><div class="integration-callout warning">Demo identity switching is for local development only and must not be used for real operational data.</div></section>`:""}`;
 }
 function projectTabs() {
   return `<nav class="project-tabs" aria-label="Program workspace sections">${["overview","tasks","timeline","team","activity"].map((tab)=>`<button class="project-tab ${state.projectTab===tab?"active":""}" data-project-tab="${tab}">${tab[0].toUpperCase()+tab.slice(1)}</button>`).join("")}</nav>`;
@@ -256,11 +286,14 @@ function render() {
   if (!state.data) return;
   const user = state.data.currentUser;
   const select = document.getElementById("user-select");
+  document.querySelector(".user-select-label").hidden = state.authRequired;
+  select.hidden = state.authRequired;
+  document.getElementById("logout-button").hidden = !state.authRequired;
+  document.getElementById("user-avatar").hidden = state.authRequired;
   const userOptions = state.data.users.map((item)=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.role.replaceAll("_"," "))}</option>`).join("");
   if (select.innerHTML !== userOptions) select.innerHTML = userOptions;
   select.value = state.userId;
   document.getElementById("user-avatar").textContent = initials(user.name);
-  document.querySelectorAll('[data-nav="settings"]').forEach((item)=>{item.hidden=user.role==="external_partner";});
   document.getElementById("my-task-count").textContent = state.data.tasks.filter((task)=>task.assignedUserId===state.userId&&task.status!=="Completed").length;
   const unread = state.data.notifications.filter((item)=>!item.isRead).length;
   document.getElementById("notification-count").textContent = unread;
@@ -415,9 +448,24 @@ document.addEventListener("click",async(event)=>{
     catch(error) { showToast(error.message,true); }
     return;
   }
+  const accountToggle = event.target.closest("[data-account-toggle]");
+  if (accountToggle) {
+    try {
+      await api(`/api/users/${encodeURIComponent(accountToggle.dataset.accountToggle)}/active`, {
+        method: "PATCH", body: JSON.stringify({ active: accountToggle.dataset.active === "true" })
+      });
+      await refresh();
+      showToast("Account access updated.");
+    } catch (error) { showToast(error.message, true); }
+    return;
+  }
   const action = event.target.closest("[data-action]");
   if (action) {
-    if (action.dataset.action==="create-project") showProjectForm();
+    if (action.dataset.action==="logout") {
+      try { await api("/api/auth/logout",{method:"POST",body:"{}"}); state.data=null; renderLogin("You have signed out."); }
+      catch(error) { showToast(error.message,true); }
+    }
+    else if (action.dataset.action==="create-project") showProjectForm();
     else if (action.dataset.action==="replan") showReplan();
     else if (action.dataset.action==="close-modal") modalRoot.innerHTML="";
     else if (action.dataset.action==="airtable-import") await importAirtable(action);
@@ -447,6 +495,49 @@ document.addEventListener("change",(event)=>{
   }
 });
 document.addEventListener("submit",async(event)=>{
+  if(event.target.id==="login-form") {
+    event.preventDefault();
+    const data=new FormData(event.target);
+    const submit=event.target.querySelector('[type="submit"]');
+    submit.disabled=true;
+    try {
+      await api("/api/auth/login",{method:"POST",body:JSON.stringify({email:data.get("email"),password:data.get("password")})});
+      await refresh();
+    } catch(error) { renderLogin(error.message); }
+  }
+  if(event.target.id==="create-user-form") {
+    event.preventDefault();
+    const data=new FormData(event.target);
+    const submit=event.target.querySelector('[type="submit"]');
+    submit.disabled=true;
+    try {
+      await api("/api/users",{method:"POST",body:JSON.stringify({
+        name:data.get("newUserName"),email:data.get("newUserEmail"),
+        role:data.get("newUserRole"),password:data.get("newUserPassword")
+      })});
+      await refresh();
+      showToast("Account created. Share the temporary password privately.");
+    } catch(error) { showToast(error.message,true); submit.disabled=false; }
+  }
+  if(event.target.id==="change-password-form") {
+    event.preventDefault();
+    const data=new FormData(event.target);
+    const submit=event.target.querySelector('[type="submit"]');
+    const newPassword=String(data.get("newPassword")||"");
+    if(newPassword!==String(data.get("confirmPassword")||"")) {
+      showToast("The new passwords do not match.",true);
+      return;
+    }
+    submit.disabled=true;
+    try {
+      await api("/api/auth/password",{method:"PATCH",body:JSON.stringify({
+        currentPassword:data.get("currentPassword"),newPassword
+      })});
+      event.target.reset();
+      showToast("Password updated. Other active sessions were signed out.");
+    } catch(error) { showToast(error.message,true); }
+    finally { submit.disabled=false; }
+  }
   if(event.target.id==="project-form") {
     event.preventDefault();
     const formData=new FormData(event.target);

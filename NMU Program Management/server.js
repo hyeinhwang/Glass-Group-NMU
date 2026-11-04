@@ -3,7 +3,9 @@ import { readFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import {
+  createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual
+} from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -11,11 +13,17 @@ const publicDir = join(root, "public");
 const dataDir = join(root, ".data");
 await mkdir(dataDir, { recursive: true });
 const database = new DatabaseSync(process.env.NMU_DATABASE_PATH || join(dataDir, "nmu.sqlite"));
+const authRequired = process.env.NMU_AUTH_MODE === "required" || process.env.NODE_ENV === "production";
 database.exec(`
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
-    role TEXT NOT NULL CHECK(role IN ('admin','program_manager','employee','external_partner'))
+    role TEXT NOT NULL CHECK(role IN ('admin','program_manager','employee','external_partner')),
+    password_hash TEXT, is_active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL, created_at TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
@@ -68,6 +76,9 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS task_assignee_idx ON tasks(assigned_user_id);
   CREATE INDEX IF NOT EXISTS activity_project_idx ON activity_logs(project_id,created_at);
 `);
+const userColumns = new Set(database.prepare("PRAGMA table_info(users)").all().map((column) => column.name));
+if (!userColumns.has("password_hash")) database.exec("ALTER TABLE users ADD COLUMN password_hash TEXT");
+if (!userColumns.has("is_active")) database.exec("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
 
 const nowISO = () => new Date().toISOString();
 const dateOnly = (date) => date.toISOString().slice(0, 10);
@@ -140,10 +151,8 @@ const templateDefs = [
   }
 ];
 
-function seedDemoData() {
-  if (database.prepare("SELECT COUNT(*) AS count FROM users").get().count) return;
-  const insertUser = database.prepare("INSERT INTO users(id,name,email,role) VALUES(?,?,?,?)");
-  for (const user of users) insertUser.run(...user);
+function seedTemplates() {
+  if (database.prepare("SELECT COUNT(*) AS count FROM templates").get().count) return;
   const insertTemplate = database.prepare("INSERT INTO templates(id,name,program_type,description) VALUES(?,?,?,?)");
   const insertTemplateTask = database.prepare(`INSERT INTO template_tasks
     (id,template_id,title,description,relative_due_days,default_role,priority,milestone,dependency_index)
@@ -158,6 +167,13 @@ function seedDemoData() {
       insertTemplateTask.run(taskId, template.id, ...task);
     });
   }
+}
+
+function seedDemoData() {
+  if (database.prepare("SELECT COUNT(*) AS count FROM users").get().count) return;
+  const insertUser = database.prepare("INSERT INTO users(id,name,email,role) VALUES(?,?,?,?)");
+  for (const user of users) insertUser.run(...user);
+  seedTemplates();
   const projects = [
     { id: "p-seattle", name: "Seattle Swim Program", type: "Community", location: "Seattle, WA", host: "Rainier Community Center", start: 35, end: 49, status: "On Track", manager: "u-jordan", template: "tpl-community", progress: 0.56 },
     { id: "p-tacoma", name: "Tacoma Swim Program", type: "Community", location: "Tacoma, WA", host: "Eastside Community Hub", start: 16, end: 30, status: "At Risk", manager: "u-jordan", template: "tpl-community", progress: 0.31 },
@@ -197,7 +213,7 @@ function seedDemoData() {
       const assignee = project.id === "p-seattle" && taskIndex === 0
         ? "u-partner"
         : role === "program_manager" ? project.manager : roleOwner[role] ?? project.manager;
-      insertTask.run(id, project.id, templateTaskIds.get(project.template)[taskIndex], title, description,
+      insertTask.run(id, project.id, `${project.template}-task-${taskIndex + 1}`, title, description,
         assignee, status, priority, dueDate, milestone, status === "Completed" ? nowISO() : null, nowISO(), nowISO());
       if (dependencyIndex !== null) insertDependency.run(id, `${project.id}-task-${dependencyIndex}`);
     });
@@ -222,7 +238,29 @@ function seedDemoData() {
   addNotification.run(randomUUID(), "u-jordan", "p-tacoma", "Tacoma Swim Program has overdue preparation work.", 0, nowISO());
   addNotification.run(randomUUID(), "u-catalina", "p-seattle", "Review the upcoming Seattle program timeline.", 0, nowISO());
 }
-seedDemoData();
+seedTemplates();
+if (authRequired) {
+  const adminEmail = String(process.env.NMU_ADMIN_EMAIL || "").trim().toLowerCase();
+  const adminPassword = String(process.env.NMU_ADMIN_PASSWORD || "");
+  const adminName = String(process.env.NMU_ADMIN_NAME || "NMU Administrator").trim();
+  if (adminEmail && adminPassword.length >= 12) {
+    const existing = database.prepare("SELECT id,role,password_hash FROM users WHERE email=?").get(adminEmail);
+    if (!existing) {
+      const salt = randomBytes(16).toString("base64url");
+      const hash = scryptSync(adminPassword, salt, 64).toString("base64url");
+      database.prepare("INSERT INTO users(id,name,email,role,password_hash) VALUES(?,?,?,'admin',?)")
+        .run(randomUUID(), adminName, adminEmail, `${salt}:${hash}`);
+    } else if (existing.role === "admin" && !existing.password_hash) {
+      const salt = randomBytes(16).toString("base64url");
+      const hash = scryptSync(adminPassword, salt, 64).toString("base64url");
+      database.prepare("UPDATE users SET password_hash=? WHERE id=?").run(`${salt}:${hash}`, existing.id);
+    }
+  } else {
+    console.warn("Authentication is required, but NMU_ADMIN_EMAIL and a 12+ character NMU_ADMIN_PASSWORD are needed to provision the initial administrator.");
+  }
+} else {
+  seedDemoData();
+}
 
 const roleLabel = {
   admin: "Administrator",
@@ -230,8 +268,50 @@ const roleLabel = {
   employee: "Employee",
   external_partner: "External Partner"
 };
-const getUser = (id) => database.prepare("SELECT id,name,email,role FROM users WHERE id=?").get(id);
-const getCurrentUser = (request) => getUser(request.headers["x-demo-user"] || "u-catalina") || getUser("u-catalina");
+const getUser = (id) => database.prepare("SELECT id,name,email,role FROM users WHERE id=? AND is_active=1").get(id);
+const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;
+const hashSessionToken = (token) => createHash("sha256").update(token).digest("hex");
+function readCookie(request, name) {
+  const cookie = request.headers.cookie || "";
+  const value = cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`));
+  return value ? decodeURIComponent(value.slice(name.length + 1)) : "";
+}
+const getCurrentUser = (request) => {
+  if (authRequired) {
+    const token = readCookie(request, "nmu_session");
+    if (!token) return null;
+    const session = database.prepare("SELECT user_id,expires_at FROM auth_sessions WHERE token_hash=?").get(hashSessionToken(token));
+    if (!session || session.expires_at <= nowISO()) return null;
+    return getUser(session.user_id) || null;
+  }
+  return getUser(request.headers["x-demo-user"] || "u-catalina") || getUser("u-catalina");
+};
+const failedLoginAttempts = new Map();
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("base64url");
+  return `${salt}:${scryptSync(password, salt, 64).toString("base64url")}`;
+}
+function verifyPassword(password, storedHash) {
+  const [salt, encodedHash] = String(storedHash || "").split(":");
+  if (!salt || !encodedHash) return false;
+  const expected = Buffer.from(encodedHash, "base64url");
+  const actual = scryptSync(password, salt, expected.length);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+function setSessionCookie(response, token, maxAge) {
+  const secure = process.env.NODE_ENV === "production" || process.env.NMU_AUTH_MODE === "required";
+  response.setHeader("Set-Cookie", `nmu_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`);
+}
+function verifySameOrigin(request) {
+  if (!authRequired) return true;
+  const origin = request.headers.origin;
+  if (!origin) return ["GET", "HEAD", "OPTIONS"].includes(request.method);
+  try {
+    return new URL(origin).host === request.headers.host;
+  } catch {
+    return false;
+  }
+}
 const canManage = (user) => user.role === "admin";
 const isMember = (projectId, userId) => Boolean(database.prepare("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?").get(projectId, userId));
 function canAccessProject(user, projectId) {
@@ -329,8 +409,116 @@ function resolveRoleAssignment(role, managerId) {
 }
 
 async function handleApi(request, response, url) {
-  const user = getCurrentUser(request);
   const path = url.pathname;
+  if (request.method === "GET" && path === "/api/auth/config") {
+    return send(response, 200, {
+      required: authRequired,
+      administratorConfigured: Boolean(database.prepare("SELECT 1 FROM users WHERE role='admin' AND password_hash IS NOT NULL AND is_active=1").get())
+    });
+  }
+  if (request.method === "POST" && path === "/api/auth/login") {
+    if (!authRequired) return send(response, 404, { error: "Authentication is not enabled in local demo mode." });
+    if (!verifySameOrigin(request)) return send(response, 403, { error: "Request origin was not allowed." });
+    const forwardedFor = request.headers["x-forwarded-for"];
+    const address = (typeof forwardedFor === "string" ? forwardedFor.split(",").at(-1)?.trim() : "") || request.socket.remoteAddress || "unknown";
+    const attempt = failedLoginAttempts.get(address);
+    if (attempt && attempt.until > Date.now() && attempt.count >= 8) {
+      return send(response, 429, { error: "Too many sign-in attempts. Wait 15 minutes and try again." });
+    }
+    const input = await readBody(request);
+    const email = String(input.email || "").trim().toLowerCase();
+    const password = String(input.password || "");
+    const account = database.prepare("SELECT id,name,email,role,password_hash FROM users WHERE email=? AND is_active=1").get(email);
+    const isValid = account?.password_hash && password.length <= 1024 && verifyPassword(password, account.password_hash);
+    if (!isValid) {
+      const current = attempt && attempt.until > Date.now() ? attempt : { count: 0, until: Date.now() + 15 * 60 * 1000 };
+      current.count++;
+      failedLoginAttempts.set(address, current);
+      return send(response, 401, { error: "Email or password is incorrect." });
+    }
+    failedLoginAttempts.delete(address);
+    database.prepare("DELETE FROM auth_sessions WHERE expires_at<=?").run(nowISO());
+    const token = randomBytes(32).toString("base64url");
+    const expiresAt = new Date(Date.now() + sessionLifetimeMs).toISOString();
+    database.prepare("INSERT INTO auth_sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)")
+      .run(hashSessionToken(token), account.id, expiresAt, nowISO());
+    setSessionCookie(response, token, Math.floor(sessionLifetimeMs / 1000));
+    return send(response, 200, { user: { id: account.id, name: account.name, email: account.email, role: account.role } });
+  }
+  const user = getCurrentUser(request);
+  if (authRequired && !user) return send(response, 401, { error: "Sign in to continue." });
+  if (authRequired && !verifySameOrigin(request)) return send(response, 403, { error: "Request origin was not allowed." });
+  if (request.method === "POST" && path === "/api/auth/logout") {
+    const token = readCookie(request, "nmu_session");
+    if (token) database.prepare("DELETE FROM auth_sessions WHERE token_hash=?").run(hashSessionToken(token));
+    setSessionCookie(response, "", 0);
+    return send(response, 200, { ok: true });
+  }
+  if (request.method === "PATCH" && path === "/api/auth/password") {
+    const input = await readBody(request);
+    const currentPassword = String(input.currentPassword || "");
+    const newPassword = String(input.newPassword || "");
+    const account = database.prepare("SELECT password_hash FROM users WHERE id=?").get(user.id);
+    if (!verifyPassword(currentPassword, account?.password_hash)) return send(response, 400, { error: "Current password is incorrect." });
+    if (newPassword.length < 12 || newPassword.length > 1024) {
+      return send(response, 400, { error: "Passwords must be between 12 and 1,024 characters." });
+    }
+    const token = readCookie(request, "nmu_session");
+    const tokenHash = hashSessionToken(token);
+    database.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hashPassword(newPassword), user.id);
+    database.prepare("DELETE FROM auth_sessions WHERE user_id=? AND token_hash<>?").run(user.id, tokenHash);
+    return send(response, 200, { ok: true });
+  }
+  if (request.method === "GET" && path === "/api/users") {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can view account management." });
+    const accounts = database.prepare(`SELECT id,name,email,role,is_active AS active
+      FROM users ORDER BY name`).all().map((account) => ({ ...account, active: Boolean(account.active) }));
+    return send(response, 200, { users: accounts });
+  }
+  if (request.method === "POST" && path === "/api/users") {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can create accounts." });
+    const input = await readBody(request);
+    const name = String(input.name || "").trim();
+    const email = String(input.email || "").trim().toLowerCase();
+    const password = String(input.password || "");
+    const role = String(input.role || "");
+    if (!name || name.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
+      return send(response, 400, { error: "Enter a valid name and email address." });
+    }
+    if (password.length < 12 || password.length > 1024) {
+      return send(response, 400, { error: "Passwords must be between 12 and 1,024 characters." });
+    }
+    if (!["admin", "program_manager", "employee", "external_partner"].includes(role)) {
+      return send(response, 400, { error: "Choose a valid account role." });
+    }
+    try {
+      const id = randomUUID();
+      database.prepare("INSERT INTO users(id,name,email,role,password_hash) VALUES(?,?,?,?,?)")
+        .run(id, name, email, role, hashPassword(password));
+      return send(response, 201, { user: { id, name, email, role } });
+    } catch (error) {
+      if (String(error.message).includes("UNIQUE constraint failed: users.email")) {
+        return send(response, 409, { error: "An account with that email already exists." });
+      }
+      throw error;
+    }
+  }
+  if (request.method === "PATCH" && path.startsWith("/api/users/") && path.endsWith("/active")) {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can manage account access." });
+    const accountId = decodeURIComponent(path.slice("/api/users/".length, -"/active".length));
+    const input = await readBody(request);
+    if (typeof input.active !== "boolean") return send(response, 400, { error: "Account active state must be true or false." });
+    const target = database.prepare("SELECT id,role,is_active FROM users WHERE id=?").get(accountId);
+    if (!target) return send(response, 404, { error: "Account not found." });
+    if (!input.active && target.id === user.id) return send(response, 400, { error: "You cannot disable your own account." });
+    if (!input.active && target.role === "admin") {
+      const activeAdmins = database.prepare("SELECT COUNT(*) AS count FROM users WHERE role='admin' AND is_active=1").get().count;
+      if (activeAdmins <= 1) return send(response, 400, { error: "At least one active administrator account is required." });
+    }
+    database.prepare("UPDATE users SET is_active=? WHERE id=?").run(input.active ? 1 : 0, target.id);
+    if (!input.active) database.prepare("DELETE FROM auth_sessions WHERE user_id=?").run(target.id);
+    return send(response, 200, { ok: true });
+  }
   if (request.method === "GET" && path === "/api/bootstrap") {
     const projects = projectRows(user).map(projectResponse);
     const visibleIds = new Set(projects.map((project) => project.id));
@@ -341,7 +529,7 @@ async function handleApi(request, response, url) {
       .map((item) => ({ id: item.id, message: item.message, isRead: Boolean(item.is_read), createdAt: item.created_at, projectId: item.project_id }));
     return send(response, 200, {
       currentUser: { ...user, roleLabel: roleLabel[user.role] },
-      users: database.prepare("SELECT id,name,role FROM users ORDER BY name").all(),
+      users: database.prepare("SELECT id,name,role FROM users WHERE is_active=1 ORDER BY name").all(),
       projects, tasks, notifications,
       templates: database.prepare("SELECT id,name,program_type AS programType,description FROM templates ORDER BY name").all(),
       integration: { airtableConfigured: Boolean(process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) },
@@ -622,8 +810,10 @@ const mimeTypes = {
   ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"
 };
 const server = createServer(async (request, response) => {
+  let pathname = "";
   try {
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    pathname = url.pathname;
     if (url.pathname.startsWith("/api/")) return await handleApi(request, response, url);
     const requestedPath = url.pathname === "/" ? "/index.html" : decodeURIComponent(url.pathname);
     const filePath = normalize(join(publicDir, requestedPath));
@@ -631,7 +821,7 @@ const server = createServer(async (request, response) => {
     const content = await readFile(filePath);
     return send(response, 200, content, mimeTypes[extname(filePath)] || "application/octet-stream");
   } catch (error) {
-    if (error.code === "ENOENT" && !url.pathname.startsWith("/api/")) {
+    if (error.code === "ENOENT" && pathname && !pathname.startsWith("/api/")) {
       return send(response, 404, "Not found.", "text/plain; charset=utf-8");
     }
     console.error(error);

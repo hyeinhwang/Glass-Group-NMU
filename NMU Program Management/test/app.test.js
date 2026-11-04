@@ -222,4 +222,142 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     });
     assert.equal(unauthorized.status, 403);
   });
+
+  await t.test("requires production sign-in and protects administrator actions", async () => {
+    const authDirectory = await mkdtemp(join(tmpdir(), "nmu-auth-test-"));
+    const authPort = await availablePort();
+    const authUrl = `http://127.0.0.1:${authPort}`;
+    const adminEmail = "initial-admin@nmu.test";
+    const adminPassword = "test-admin-password-123";
+    const authServer = spawn(process.execPath, ["server.js"], {
+      cwd: projectRoot,
+      env: {
+        ...process.env, NODE_ENV: "production", NMU_AUTH_MODE: "required",
+        NMU_ADMIN_EMAIL: adminEmail, NMU_ADMIN_PASSWORD: adminPassword,
+        NMU_DATABASE_PATH: join(authDirectory, "production.sqlite"), PORT: String(authPort)
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let serverOutput = "";
+    authServer.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
+    authServer.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
+    const authRequest = async (path, { method = "GET", cookie = "", body, origin = `${authUrl}` } = {}) => {
+      const response = await fetch(`${authUrl}${path}`, {
+        method,
+        headers: {
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...(cookie ? { cookie } : {}),
+          ...(origin ? { origin } : {}),
+          "x-demo-user": "u-catalina"
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      });
+      return { status: response.status, body: await response.json().catch(() => ({})), setCookie: response.headers.get("set-cookie") || "" };
+    };
+    try {
+      let ready = false;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (authServer.exitCode !== null) throw new Error(`Auth test server exited early:\n${serverOutput}`);
+        try {
+          const response = await fetch(`${authUrl}/api/auth/config`);
+          if (response.ok) { ready = true; break; }
+        } catch {}
+        await delay(100);
+      }
+      assert.equal(ready, true, `Auth test server did not start:\n${serverOutput}`);
+
+      const config = await authRequest("/api/auth/config");
+      assert.equal(config.body.required, true);
+      assert.equal(config.body.administratorConfigured, true);
+      const spoofed = await authRequest("/api/bootstrap");
+      assert.equal(spoofed.status, 401);
+      const wrongOrigin = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: adminEmail, password: adminPassword }, origin: "https://attacker.example"
+      });
+      assert.equal(wrongOrigin.status, 403);
+      const badLogin = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: adminEmail, password: "incorrect-password" }
+      });
+      assert.equal(badLogin.status, 401);
+      const login = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: adminEmail, password: adminPassword }
+      });
+      assert.equal(login.status, 200);
+      assert.match(login.setCookie, /HttpOnly/);
+      assert.match(login.setCookie, /SameSite=Strict/);
+      assert.match(login.setCookie, /Secure/);
+      const adminCookie = login.setCookie.split(";")[0];
+      const bootstrap = await authRequest("/api/bootstrap", { cookie: adminCookie });
+      assert.equal(bootstrap.status, 200);
+      assert.equal(bootstrap.body.currentUser.email, adminEmail);
+      assert.equal(bootstrap.body.projects.length, 0);
+      const browserBootstrap = await authRequest("/api/bootstrap", { cookie: adminCookie, origin: "" });
+      assert.equal(browserBootstrap.status, 200);
+
+      const created = await authRequest("/api/users", {
+        method: "POST", cookie: adminCookie,
+        body: { name: "Team Member", email: "member@nmu.test", role: "employee", password: "member-test-password-456" }
+      });
+      assert.equal(created.status, 201);
+      assert.ok(!JSON.stringify(created.body).includes("password_hash"));
+      const accountList = await authRequest("/api/users", { cookie: adminCookie });
+      assert.equal(accountList.status, 200);
+      assert.equal(accountList.body.users.find((item) => item.email === "member@nmu.test").active, true);
+      const duplicate = await authRequest("/api/users", {
+        method: "POST", cookie: adminCookie,
+        body: { name: "Team Member", email: "member@nmu.test", role: "employee", password: "member-test-password-456" }
+      });
+      assert.equal(duplicate.status, 409);
+
+      const memberLogin = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: "member@nmu.test", password: "member-test-password-456" }
+      });
+      assert.equal(memberLogin.status, 200);
+      assert.equal(memberLogin.body.user.role, "employee");
+      const memberCookie = memberLogin.setCookie.split(";")[0];
+      const changedPassword = await authRequest("/api/auth/password", {
+        method: "PATCH", cookie: memberCookie,
+        body: { currentPassword: "member-test-password-456", newPassword: "member-updated-password-789" }
+      });
+      assert.equal(changedPassword.status, 200);
+      const oldPasswordLogin = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: "member@nmu.test", password: "member-test-password-456" }
+      });
+      assert.equal(oldPasswordLogin.status, 401);
+      const updatedPasswordLogin = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: "member@nmu.test", password: "member-updated-password-789" }
+      });
+      assert.equal(updatedPasswordLogin.status, 200);
+      const updatedMemberCookie = updatedPasswordLogin.setCookie.split(";")[0];
+      const forbidden = await authRequest("/api/users", {
+        method: "POST", cookie: updatedMemberCookie,
+        body: { name: "Admin Two", email: "admin-two@nmu.test", role: "admin", password: "another-test-password-789" }
+      });
+      assert.equal(forbidden.status, 403);
+      const disableSelf = await authRequest(`/api/users/${encodeURIComponent(created.body.user.id)}/active`, {
+        method: "PATCH", cookie: updatedMemberCookie, body: { active: false }
+      });
+      assert.equal(disableSelf.status, 403);
+      const disableMember = await authRequest(`/api/users/${encodeURIComponent(created.body.user.id)}/active`, {
+        method: "PATCH", cookie: adminCookie, body: { active: false }
+      });
+      assert.equal(disableMember.status, 200);
+      const revokedSession = await authRequest("/api/bootstrap", { cookie: updatedMemberCookie });
+      assert.equal(revokedSession.status, 401);
+      const enableMember = await authRequest(`/api/users/${encodeURIComponent(created.body.user.id)}/active`, {
+        method: "PATCH", cookie: adminCookie, body: { active: true }
+      });
+      assert.equal(enableMember.status, 200);
+      const logout = await authRequest("/api/auth/logout", { method: "POST", cookie: adminCookie });
+      assert.equal(logout.status, 200);
+      const afterLogout = await authRequest("/api/bootstrap", { cookie: adminCookie });
+      assert.equal(afterLogout.status, 401);
+    } finally {
+      if (authServer.exitCode === null) {
+        authServer.kill("SIGTERM");
+        await new Promise((resolve) => authServer.once("exit", resolve));
+      }
+      await rm(authDirectory, { recursive: true, force: true });
+    }
+  });
 });

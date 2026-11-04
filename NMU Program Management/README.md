@@ -80,16 +80,21 @@ The database is stored at `.data/nmu.sqlite` by default. Set `NMU_DATABASE_PATH`
 npm test
 ```
 
-The integration tests launch an isolated server/database and cover seeded data, relative deadline generation, dependency blocking/unblocking, date previews and preserved completed work, partner access boundaries, and administrator template editing.
+The integration tests launch isolated server/databases and cover seeded data, project and task workflows, partner access boundaries, template editing, production sign-in, origin checks, session logout, password changes, account creation, and account disabling.
 
-## Hosting and security notes
+## Hosting and security
 
-The current Node server is a good starting point for Railway. SQLite durability on Railway requires a persistent volume mounted at the database path; without one, local database files can be lost when an instance is replaced. Netlify would require adapting the API to Netlify Functions and using a hosted database rather than a local SQLite file. Hosting is intentionally not configured yet.
+The Node server can run on Railway. For public access, generate a Railway domain and set its target port to the port the service listens on (Railway supplies `PORT`). Set these variables in Railway before the first authenticated deployment:
 
-This is a capstone prototype, not a production-ready public service:
+- `NMU_AUTH_MODE=required` (or use `NODE_ENV=production`, which also requires sign-in).
+- `NMU_ADMIN_EMAIL`: the initial administrator's email address.
+- `NMU_ADMIN_PASSWORD`: a private initial password of at least 12 characters.
+- `NMU_ADMIN_NAME` (optional): the initial administrator's display name.
 
-- Demo identity is selected client-side and conveyed with a demo header; it is not a secure login system.
-- Add real authentication, session management, account administration, CSRF protections, rate limiting, and production authorization review before public deployment.
-- The SQLite database is appropriate for a local single-instance prototype. Use a managed relational database for concurrent production hosting.
-- Partner access is restricted to shared projects and tasks assigned to the partner demo user; implement explicit per-field sharing rules before importing real operational data.
-- Email/chat reminders, calendar synchronization, participant records, and bidirectional Airtable sync are not implemented.
+The initial administrator is provisioned when the database is first created. Changing the environment password later does not reset an existing account; sign in and use **Settings → Change your password** instead. Administrators can create individual team accounts and enable or disable them in Settings. Share temporary passwords privately. Each teammate should change their password after signing in. Demo identity switching is only enabled in local demo mode.
+
+Authentication uses scrypt password hashes, random server-side sessions in HttpOnly/SameSite cookies, origin checks on writes, login rate limiting, and server-side role checks. It is an MVP authentication layer, not a substitute for an organization-wide identity provider or a formal security assessment.
+
+SQLite durability on Railway requires a persistent volume mounted at the database path (set `NMU_DATABASE_PATH` to a path on that volume); otherwise data can be lost when the service is replaced. SQLite is intended for a single app instance. Use a managed relational database before scaling to concurrent instances. Netlify hosting would require adapting the API to Netlify Functions and using a hosted database.
+
+Partner project access follows the existing shared-project and task-assignment rules. Review those permissions before importing real operational data. The current Airtable integration remains a one-way, single-table program import; linked tables, bidirectional task sync, email/chat reminders, calendar synchronization, and participant records are not implemented.
