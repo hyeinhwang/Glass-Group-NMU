@@ -101,6 +101,26 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     assert.equal(project.body.project.details.primaryContact, "Morgan Lee");
   });
 
+  await t.test("reassigns tasks, notifies the new owner, and records notes", async () => {
+    const task = createdTasks.find((item) => item.title === "Research funding opportunities");
+    const reassigned = await request(`/api/tasks/${task.id}/assignee`, "u-jordan", {
+      method: "PATCH", body: JSON.stringify({ assignedUserId: "u-mary" })
+    });
+    assert.equal(reassigned.status, 200);
+    const previousOwner = await request("/api/bootstrap", "u-casey");
+    const newOwner = await request("/api/bootstrap", "u-mary");
+    assert.ok(!previousOwner.body.tasks.some((item) => item.id === task.id && item.assignedUserId === "u-casey"));
+    assert.ok(newOwner.body.tasks.some((item) => item.id === task.id && item.assignedUserId === "u-mary"));
+    assert.ok(newOwner.body.notifications.some((item) => item.message.includes(task.title)));
+    const comment = await request(`/api/tasks/${task.id}/comments`, "u-mary", {
+      method: "POST", body: JSON.stringify({ content: "Contacted the regional grant office." })
+    });
+    assert.equal(comment.status, 201);
+    const project = await request(`/api/projects/${createdProjectId}`, "u-jordan");
+    assert.ok(project.body.activities.some((item) => item.action === "Task reassigned"));
+    assert.ok(project.body.comments.some((item) => item.content === "Contacted the regional grant office."));
+  });
+
   await t.test("blocks task completion until prerequisites are complete", async () => {
     const backgroundCheck = createdTasks.find((task) => task.title === "Complete background checks");
     const recruitInstructors = createdTasks.find((task) => task.title === "Recruit instructors");
