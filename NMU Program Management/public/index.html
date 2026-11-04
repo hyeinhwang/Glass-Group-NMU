@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123c43">
+  <meta name="description" content="NMU program onboarding and project management workspace">
+  <title>NMU | Program Operations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" data-nav="overview" aria-label="NMU Program Operations home">
+        <span class="brand-symbol">n</span><span class="brand-name">nmu<span>program operations</span></span>
+      </a>
+      <div class="nav-caption">WORKSPACE</div>
+      <nav class="navigation" aria-label="Main navigation">
+        <button class="nav-link active" data-nav="overview"><span class="nav-icon">⌂</span>Overview</button>
+        <button class="nav-link" data-nav="my-tasks"><span class="nav-icon">✓</span>My tasks<span class="nav-pill" id="my-task-count">0</span></button>
+        <button class="nav-link" data-nav="projects"><span class="nav-icon">▦</span>Programs</button>
+        <button class="nav-link" data-nav="timeline"><span class="nav-icon">◷</span>Timeline</button>
+        <button class="nav-link" data-nav="templates"><span class="nav-icon">▤</span>Templates</button>
+        <button class="nav-link" data-nav="notifications"><span class="nav-icon">♧</span>Notifications<span class="nav-pill quiet" id="notification-count">0</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="nav-caption">CONNECTED WORKFLOWS</div>
+        <button class="integration-status" data-nav="settings"><span class="status-dot"></span><span><b>Airtable</b><small id="airtable-status">Not connected</small></span><span class="arrow">↗</span></button>
+        <div class="sidebar-footer"><span class="watermark">NMU</span><span>Swim programs, made simpler.</span></div>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>NMU</span><span class="crumb-divider">/</span><b id="crumb-current">Overview</b></div>
+        <div class="top-actions">
+          <button class="icon-button notification-button" data-nav="notifications" aria-label="Notifications">♧<span class="notification-indicator" id="notification-indicator"></span></button>
+          <span class="top-divider"></span>
+          <label class="user-select-label" for="user-select">Demo user</label>
+          <select id="user-select" class="user-select" aria-label="Choose demo user"></select>
+          <span class="avatar" id="user-avatar">C</span>
+        </div>
+      </header>
+      <section id="content" class="content" tabindex="-1">
+        <div class="loading-state"><span class="spinner"></span><span>Preparing your workspace…</span></div>
+      </section>
+    </main>
+  </div>
+  <nav class="mobile-bottom" aria-label="Mobile navigation">
+    <button data-nav="overview"><span>⌂</span>Overview</button>
+    <button data-nav="my-tasks"><span>✓</span>My tasks</button>
+    <button data-nav="projects"><span>▦</span>Programs</button>
+    <button data-nav="timeline"><span>◷</span>Timeline</button>
+    <button data-nav="templates"><span>▤</span>Templates</button>
+    <button data-nav="notifications"><span>♧</span>Alerts</button>
+    <button data-nav="settings"><span>↗</span>Airtable</button>
+  </nav>
+  <div id="modal-root"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
