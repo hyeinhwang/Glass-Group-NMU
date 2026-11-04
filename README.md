@@ -2,6 +2,8 @@
 
 The NMU Program Operations prototype is in [`NMU Program Management/`](./NMU%20Program%20Management/).
 
+The root `package.json` is a Railway entry point: it lets Railpack detect Node.js at the repository root and starts the app from its subfolder. Keep the Railway service Root Directory empty (repository root), and use `npm start` as the start command if Railway does not detect it automatically.
+
 ## Run locally
 
 Requires Node.js 22.13 or newer.
@@ -12,6 +14,7 @@ npm start
 ```
 
 Open http://localhost:3000. Run the workflow tests with `npm test` from the same directory.
+From the repository root, `npm start` starts the app and `npm test` runs its workflow tests.
 
 ## Airtable
 

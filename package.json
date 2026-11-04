@@ -1,0 +1,13 @@
+{
+  "name": "glass-group-nmu",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Railway entry point for the NMU Program Operations app",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=\"NMU Program Management/.env\" \"NMU Program Management/server.js\"",
+    "test": "npm --prefix \"NMU Program Management\" test"
+  }
+}
