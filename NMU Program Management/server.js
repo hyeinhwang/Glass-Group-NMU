@@ -508,9 +508,8 @@ async function runAirtableSync(user) {
   }
 
   const recordsByTable = new Map();
-  for (const name of AIRTABLE_TABLE_NAMES) {
-    const table = tablesByName.get(name);
-    recordsByTable.set(name, await fetchAirtableRecords(config, table.id));
+  for (const table of schema) {
+    recordsByTable.set(table.name, await fetchAirtableRecords(config, table.id));
   }
   const recordMaps = new Map([...recordsByTable].map(([name, records]) =>
     [name, new Map(records.map((record) => [record.id, record]))]));
@@ -539,12 +538,11 @@ async function runAirtableSync(user) {
     fields_json=excluded.fields_json,synced_at=excluded.synced_at`);
   database.exec("BEGIN");
   try {
-    for (const name of AIRTABLE_TABLE_NAMES) {
-      const table = tablesByName.get(name);
-      saveMetadata.run(table.id, name, JSON.stringify(table.fields), syncTime);
-      const records = recordsByTable.get(name);
+    for (const table of schema) {
+      const records = recordsByTable.get(table.name);
+      saveMetadata.run(table.id, table.name, JSON.stringify(table.fields), syncTime);
       for (const record of records) saveRecord.run(table.id, record.id, JSON.stringify(record.fields || {}), syncTime);
-      syncedCounts[name] = records.length;
+      syncedCounts[table.name] = records.length;
     }
 
     const updateUser = database.prepare("UPDATE users SET airtable_record_id=? WHERE lower(email)=lower(?)");
@@ -1099,6 +1097,52 @@ async function handleApi(request, response, url) {
     const notificationId = decodeURIComponent(path.slice("/api/notifications/".length));
     const result = database.prepare("UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?").run(notificationId, user.id);
     return result.changes ? send(response, 200, { ok: true }) : send(response, 404, { error: "Notification not found." });
+  }
+  if (request.method === "GET" && path === "/api/integrations/airtable/tables") {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can inspect synchronized Airtable data." });
+    response.setHeader("cache-control", "no-store");
+    const tables = database.prepare(`SELECT t.table_id AS id,t.table_name AS name,t.fields_json AS fields,
+      t.synced_at AS syncedAt,(SELECT COUNT(*) FROM airtable_records r WHERE r.table_id=t.table_id) AS recordCount
+      FROM airtable_tables t ORDER BY t.table_name`).all()
+      .map((table) => ({ ...table, fields: JSON.parse(table.fields) }));
+    return send(response, 200, { tables });
+  }
+  const airtableRecordsPrefix = "/api/integrations/airtable/tables/";
+  if (request.method === "GET" && path.startsWith(airtableRecordsPrefix) && path.endsWith("/records")) {
+    if (!canManage(user)) return send(response, 403, { error: "Only administrators can inspect synchronized Airtable data." });
+    response.setHeader("cache-control", "no-store");
+    let tableId;
+    try {
+      tableId = decodeURIComponent(path.slice(airtableRecordsPrefix.length, -"/records".length));
+    } catch {
+      return send(response, 400, { error: "Invalid Airtable table identifier." });
+    }
+    const table = database.prepare("SELECT table_id AS id,table_name AS name,fields_json AS fields,synced_at AS syncedAt FROM airtable_tables WHERE table_id=?").get(tableId);
+    if (!table) return send(response, 404, { error: "Airtable table has not been synchronized yet." });
+    const limitValue = Number.parseInt(url.searchParams.get("limit") || "25", 10);
+    const offsetValue = Number.parseInt(url.searchParams.get("offset") || "0", 10);
+    const limit = Number.isSafeInteger(limitValue) ? Math.min(100, Math.max(1, limitValue)) : 25;
+    const offset = Number.isSafeInteger(offsetValue) ? Math.max(0, offsetValue) : 0;
+    const query = String(url.searchParams.get("q") || "").trim().slice(0, 200);
+    const where = query ? "WHERE table_id=? AND instr(lower(fields_json),lower(?))>0" : "WHERE table_id=?";
+    const params = query ? [tableId, query] : [tableId];
+    const total = database.prepare(`SELECT COUNT(*) AS count FROM airtable_records ${where}`).get(...params).count;
+    const records = database.prepare(`SELECT record_id AS id,fields_json AS fields,synced_at AS syncedAt
+      FROM airtable_records ${where} ORDER BY record_id LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset)
+      .map((record) => ({ ...record, fields: JSON.parse(record.fields) }));
+    const labelRows = database.prepare("SELECT record_id AS id,fields_json FROM airtable_records").all();
+    const recordLabels = {};
+    for (const row of labelRows) {
+      const fields = JSON.parse(row.fields_json);
+      const label = ["Name", "Unique", "Session Name", "Program Name", "Instructor Name", "Role Name",
+        "List Name (Unique)", "Email Address", "Short Description"].map((key) => fields[key])
+        .find((value) => typeof value === "string" && value.trim());
+      const personName = [fields["First Name"], fields["Last Name"]].filter((value) => typeof value === "string" && value.trim()).join(" ");
+      if (label || personName) recordLabels[row.id] = label || personName;
+    }
+    table.fields = JSON.parse(table.fields);
+    return send(response, 200, { table, records, recordLabels, total, limit, offset, query });
   }
   if (request.method === "GET" && path === "/api/integrations/airtable/schema") {
     if (!canManage(user)) return send(response, 403, { error: "Only administrators can inspect the Airtable connection." });

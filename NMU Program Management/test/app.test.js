@@ -365,7 +365,7 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
   await t.test("syncs linked Airtable tables and writes only approved Work fields", async () => {
     const adminEmail = "airtable-admin@nmu.test";
     const adminPassword = "airtable-admin-password-2026";
-    const tableNames = ["Users", "Templates", "Template List", "Roles", "Steps", "Programs", "Region", "Site", "Session", "Instructors", "Work", "WIP"];
+    const tableNames = ["Users", "Templates", "Template List", "Roles", "Steps", "Programs", "Region", "Site", "Session", "Instructors", "Work", "WIP", "Activity Log", "Comments", "Notifications"];
     const tableIds = new Map(tableNames.map((name, index) => [name, `tbl${index + 1}`]));
     const link = (name, target) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "multipleRecordLinks", options: { linkedTableId: tableIds.get(target) } });
     const text = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "singleLineText", options: {} });
@@ -384,9 +384,15 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       ["Session", [text("Session Name"), dateField("Start Date"), numberField("Duration (Days)"), dateField("End Date"), link("Site", "Site"), text("Region Site Session"), statusField, numberField("Program Hours"), link("Instructors", "Instructors"), link("Work", "Work")]],
       ["Instructors", [text("Instructor Name"), link("Site", "Site"), text("Email"), link("Session", "Session")]],
       ["Work", [text("Unique"), text("Notes"), link("Steps", "Steps"), link("Session", "Session"), numberField("Days (from Steps)"), dateField("Start Date (from Session)"), dateField("Due Date"), dateField("Completed Date"), statusField, link("Assignee", "Users")]],
-      ["WIP", [text("Name")]]
+      ["WIP", [text("Name")]],
+      ["Activity Log", [text("Name"), text("Action")]],
+      ["Comments", [text("Name"), text("Comment")]],
+      ["Notifications", [text("Name"), text("Message")]]
     ]);
     const airtableRows = new Map(tableNames.map((name) => [name, []]));
+    airtableRows.set("Activity Log", [{ id: "recActivity", fields: { Name: "Program update", Action: "Schedule confirmed" } }]);
+    airtableRows.set("Comments", [{ id: "recComment", fields: { Name: "Host notes", Comment: "Pool schedule confirmed" } }]);
+    airtableRows.set("Notifications", [{ id: "recNotification", fields: { Name: "Deadline reminder", Message: "Supplies due soon" } }]);
     airtableRows.set("Users", [{ id: "recAdmin", fields: { "Email Address": adminEmail, "First Name": "Initial", "Last Name": "Admin" } }]);
     airtableRows.set("Site", [{ id: "recSite", fields: { "Program Name": "Regional Swim", "Program Location": "Everett, WA" } }]);
     airtableRows.set("Session", [{ id: "recSession", fields: {
@@ -488,12 +494,41 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       const cookie = login.setCookie.split(";")[0];
       const schema = await authRequest("/api/integrations/airtable/schema", { cookie });
       assert.equal(schema.status, 200);
-      assert.equal(schema.body.tables.length, 12);
+      assert.equal(schema.body.tables.length, 15);
       const firstSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
       assert.equal(firstSync.status, 200, JSON.stringify(firstSync.body));
       assert.equal(firstSync.body.projects, 1);
       assert.equal(firstSync.body.tasks, 1);
+      assert.equal(Object.keys(firstSync.body.tables).length, 15);
+      assert.equal(firstSync.body.tables["Activity Log"], 1);
+      assert.equal(firstSync.body.tables.Comments, 1);
+      assert.equal(firstSync.body.tables.Notifications, 1);
       assert.equal(firstSync.body.updatedWorkRecords, 0);
+      const syncedTables = await authRequest("/api/integrations/airtable/tables", { cookie });
+      assert.equal(syncedTables.status, 200);
+      assert.equal(syncedTables.body.tables.length, 15);
+      const stepsTable = syncedTables.body.tables.find((table) => table.name === "Steps");
+      const stepRecords = await authRequest(`/api/integrations/airtable/tables/${stepsTable.id}/records?limit=10`, { cookie });
+      assert.equal(stepRecords.status, 200);
+      assert.equal(stepRecords.body.total, 1);
+      assert.equal(stepRecords.body.records[0].fields.Dependancies.length, 0);
+      assert.equal(stepRecords.body.recordLabels.recStep, "Confirm the host");
+      const activityTable = syncedTables.body.tables.find((table) => table.name === "Activity Log");
+      const activityRecords = await authRequest(`/api/integrations/airtable/tables/${activityTable.id}/records`, { cookie });
+      assert.equal(activityRecords.body.records[0].fields.Action, "Schedule confirmed");
+      const addEmployee = await authRequest("/api/users", {
+        method: "POST", cookie, body: {
+          name: "Table Viewer", email: "table-viewer@nmu.test",
+          role: "employee", password: "table-viewer-password-2026"
+        }
+      });
+      assert.equal(addEmployee.status, 201);
+      const employeeLogin = await authRequest("/api/auth/login", {
+        method: "POST", body: { email: "table-viewer@nmu.test", password: "table-viewer-password-2026" }
+      });
+      const employeeCookie = employeeLogin.setCookie.split(";")[0];
+      const deniedTableRead = await authRequest("/api/integrations/airtable/tables", { cookie: employeeCookie });
+      assert.equal(deniedTableRead.status, 403);
       const bootstrap = await authRequest("/api/bootstrap", { cookie });
       assert.equal(bootstrap.body.projects[0].name, "Regional Swim · Winter Session");
       assert.equal(bootstrap.body.projects[0].location, "Everett, WA");

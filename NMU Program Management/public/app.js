@@ -2,7 +2,8 @@ const state = {
   page: "overview", userId: localStorage.getItem("nmu-demo-user") || "u-catalina",
   data: null, projectId: null, projectTab: "overview", projectSearch: "", projectStatus: "all",
   taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks", authRequired: false,
-  administratorConfigured: false, accountUsers: [], airtableSync: null
+  administratorConfigured: false, accountUsers: [], airtableSync: null,
+  airtableData: { tables: [], selectedTableId: null, records: [], recordLabels: {}, total: 0, offset: 0, limit: 25, query: "", loading: false }
 };
 const content = document.getElementById("content");
 const modalRoot = document.getElementById("modal-root");
@@ -79,11 +80,13 @@ function renderLogin(message = "") {
   </section>`;
 }
 function setNavigation(page) {
+  if (page === "airtable-data" && !isAdmin()) return;
   state.page = page;
   state.projectId = null;
   document.querySelectorAll(".nav-link").forEach((item) => item.classList.toggle("active", item.dataset.nav === page));
   document.querySelectorAll(".mobile-bottom button").forEach((item) => item.classList.toggle("active", item.dataset.nav === page));
   render();
+  if (page === "airtable-data") loadAirtableTables();
 }
 function statusBadge(status, overdue = false) {
   const value = overdue ? "Overdue" : status || "Planning";
@@ -208,6 +211,81 @@ function renderNotifications() {
   return `${pageHeading("UPDATES", "Notifications", "Task assignments, newly unblocked work, and schedule updates for your account.", notifications.some((item)=>!item.isRead)?`<button class="button ghost" data-action="mark-all-read">Mark all read</button>`:"")}
     <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Your notifications</h2><p class="panel-subtitle">${notifications.filter((item)=>!item.isRead).length} unread · only visible to your account</p></div></div>${notifications.length ? notifications.map((item)=>`<article class="notification-card ${item.isRead?"":"unread"}"><span class="notification-icon">♧</span><div class="notification-copy"><p>${escapeHtml(item.message)}</p><time>${dateLabel(item.createdAt,{month:"short",day:"numeric"})} · ${new Date(item.createdAt).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}</time></div>${!item.isRead?`<button class="text-action" data-read-notification="${escapeHtml(item.id)}">Mark read</button>`:""}</article>`).join(""):`<div class="empty-state"><span class="empty-mark">♧</span><strong>You’re all caught up</strong>New task assignments and program updates will show here.</div>`}</section>`;
 }
+function airtableCellValue(value, recordLabels) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (item && typeof item === "object" && item.id) return item.name || recordLabels[item.id] || item.id;
+      return typeof item === "object" ? JSON.stringify(item) : String(item);
+    }).join(", ");
+  }
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+function renderAirtableData() {
+  if (!isAdmin()) return pageHeading("ADMINISTRATION", "Access denied", "Only administrators can inspect synchronized Airtable data.");
+  const data = state.airtableData;
+  const selected = data.tables.find((table) => table.id === data.selectedTableId);
+  const totalRecords = data.tables.reduce((sum, table) => sum + table.recordCount, 0);
+  const recordTable = selected ? `<section class="panel airtable-record-panel">
+    <div class="panel-head"><div><h2 class="panel-title">${escapeHtml(selected.name)}</h2><p class="panel-subtitle">${data.total} matching of ${selected.recordCount} synced records · updated ${escapeHtml(new Date(selected.syncedAt).toLocaleString())}</p></div>
+      <form class="airtable-search-form" id="airtable-search-form"><input class="search-input" name="query" aria-label="Search Airtable records" placeholder="Search this table…" value="${escapeHtml(data.query)}"><button class="button small ghost" type="submit">Search</button></form>
+    </div>
+    ${data.loading ? `<div class="empty-state"><span class="spinner"></span>Loading Airtable records…</div>` : data.records.length ? `<div class="table-wrap airtable-record-wrap"><table class="airtable-record-table"><thead><tr><th>Record ID</th>${selected.fields.map((field) => `<th>${escapeHtml(field.name)}<small>${escapeHtml(field.type)}</small></th>`).join("")}</tr></thead><tbody>${data.records.map((record) => `<tr><td class="airtable-record-id">${escapeHtml(record.id)}</td>${selected.fields.map((field) => `<td>${escapeHtml(airtableCellValue(record.fields[field.name],data.recordLabels))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><strong>${data.query?"No matching records":"No records in this table"}</strong>${data.query?"Try a different search.":"Run a sync to load records from Airtable."}</div>`}
+    <div class="airtable-pagination"><span>Showing ${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit,data.total)} of ${data.total}</span><div><button class="button small ghost" data-airtable-page="${Math.max(0,data.offset-data.limit)}" ${data.offset===0||data.loading?"disabled":""}>Previous</button><button class="button small ghost" data-airtable-page="${data.offset+data.limit}" ${data.offset+data.limit>=data.total||data.loading?"disabled":""}>Next</button></div></div>
+  </section>` : `<section class="panel"><div class="empty-state"><strong>No Airtable tables synced yet</strong>Open Airtable integration settings and run a sync to load the base.</div></section>`;
+  return `${pageHeading("ADMINISTRATOR WORKSPACE", "Airtable data", "Browse every synchronized table and its linked records. This read-only view is available only to administrators.")}
+    <div class="stat-grid" aria-label="Airtable data summary">${statCard("Tables synced",data.tables.length,"All tables in the connected base","▧")}${statCard("Records available",totalRecords,"Read-only Airtable snapshots","▤")}${statCard("Latest sync",data.tables.length?new Date(Math.max(...data.tables.map((table)=>Date.parse(table.syncedAt)))).toLocaleDateString():"Not synced", "Most recent successful sync","◷")}${statCard("Programs in workspace",state.data.projects.length,"Sessions linked into NMU","▦")}</div>
+    <section class="panel airtable-table-picker"><div class="panel-head"><div><h2 class="panel-title">Base tables</h2><p class="panel-subtitle">Select a table to inspect its fields and records.</p></div><button class="button small ghost" data-action="airtable-refresh-data">↻ Refresh table list</button></div>
+      ${data.tables.length ? `<div class="airtable-table-chips">${data.tables.map((table)=>`<button class="airtable-table-chip ${table.id===data.selectedTableId?"selected":""}" data-airtable-table="${escapeHtml(table.id)}" aria-pressed="${table.id===data.selectedTableId}"><span>${escapeHtml(table.name)}</span><small>${table.recordCount} records</small></button>`).join("")}</div>` : `<div class="empty-state">${data.loading?"Loading synced tables…":"No synced tables yet. Run an Airtable sync from Settings."}</div>`}
+    </section>
+    ${recordTable}`;
+}
+async function loadAirtableTables() {
+  if (!isAdmin()) return;
+  state.airtableData.loading = true;
+  render();
+  try {
+    const result = await api("/api/integrations/airtable/tables");
+    state.airtableData.tables = result.tables;
+    if (!result.tables.some((table) => table.id === state.airtableData.selectedTableId)) {
+      state.airtableData.selectedTableId = result.tables[0]?.id || null;
+      state.airtableData.query = "";
+      state.airtableData.offset = 0;
+    }
+    state.airtableData.loading = false;
+    render();
+    if (state.airtableData.selectedTableId) await loadAirtableRecords(0);
+  } catch (error) {
+    state.airtableData.loading = false;
+    render();
+    showToast(error.message,true);
+  }
+}
+async function loadAirtableRecords(offset = state.airtableData.offset) {
+  const data = state.airtableData;
+  if (!data.selectedTableId || !isAdmin()) return;
+  const tableId = data.selectedTableId;
+  data.loading = true;
+  render();
+  try {
+    const query = new URLSearchParams({ limit: String(data.limit), offset: String(offset) });
+    if (data.query) query.set("q",data.query);
+    const result = await api(`/api/integrations/airtable/tables/${encodeURIComponent(tableId)}/records?${query}`);
+    if (data.selectedTableId !== tableId) return;
+    data.records = result.records;
+    data.recordLabels = result.recordLabels;
+    data.total = result.total;
+    data.offset = result.offset;
+  } catch (error) {
+    showToast(error.message,true);
+  } finally {
+    if (data.selectedTableId === tableId) {
+      data.loading = false;
+      render();
+    }
+  }
+}
 function renderSettings() {
   const connected = state.data.integration.airtableConfigured;
   const lastSync = state.data.integration.airtableLastSync;
@@ -220,7 +298,7 @@ function renderSettings() {
     </section>` : "";
   const passwordSettings = state.authRequired ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">ACCOUNT SECURITY</div><h2>Change your password</h2><form id="change-password-form"><div class="form-grid">${formField("Current password","currentPassword","password",{required:true})}${formField("New password (12+ characters)","newPassword","password",{required:true})}${formField("Confirm new password","confirmPassword","password",{required:true})}</div><button class="button primary" type="submit" style="margin-top:12px">Update password</button></form></section>` : "";
   const airtableSettings = isAdmin() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable integration", "Sync the linked NMU base into the workspace and send approved Work updates back to Airtable.")}
-    <section class="integration-panel"><div class="eyebrow">AIRTABLE · LINKED TABLE SYNC</div><h2>Synchronize NMU data</h2><p>Sync imports and updates records from all 12 schema tables, preserving Airtable record IDs and linked fields. Sessions appear as programs and linked Work records appear as tasks.</p>
+    <section class="integration-panel"><div class="eyebrow">AIRTABLE · LINKED TABLE SYNC</div><h2>Synchronize NMU data</h2><p>Sync imports and snapshots every table in the connected base, preserving Airtable record IDs and linked fields. Sessions appear as programs and linked Work records appear as tasks; other tables are available in the administrator-only Airtable data browser.</p>
       <div class="integration-callout ${connected?"":"warning"}">${connected?escapeHtml(syncStatus):"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
       <p><b>Ownership:</b> Airtable owns reference and setup data. The app writes only <span class="code">Status</span>, <span class="code">Due Date</span>, <span class="code">Completed Date</span>, and <span class="code">Assignee</span> on already-linked <span class="code">Work</span> rows. Other Work fields and linked/reference tables are read-only to the app. No records are automatically deleted, and simultaneous edits are reported as conflicts rather than overwritten.</p>
       <p><b>Access:</b> the server token needs <span class="code">schema.bases:read</span>, <span class="code">data.records:read</span>, and <span class="code">data.records:write</span> access to this base. Keep it in Railway Variables; never put it in the browser or GitHub.</p>
@@ -305,13 +383,15 @@ function render() {
   document.getElementById("notification-indicator").classList.toggle("hidden",!unread);
   const integration = document.querySelector(".integration-status");
   integration.classList.toggle("connected",state.data.integration.airtableConfigured);
+  document.getElementById("airtable-data-nav").hidden = !isAdmin();
+  document.getElementById("mobile-airtable-data-nav").hidden = !isAdmin();
   document.getElementById("airtable-status").textContent = state.data.integration.airtableLastSync
     ? "Synced"
     : state.data.integration.airtableConfigured ? "Configured" : "Not connected";
   document.getElementById("crumb-current").textContent = state.page.replaceAll("-"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase());
   document.querySelectorAll(".nav-link").forEach((item)=>item.classList.toggle("active",item.dataset.nav===state.page&&!state.projectId));
   if (state.projectId && state.projectData) return renderProjectPage();
-  const renderers = { overview:renderOverview, projects:renderProjects, "my-tasks":renderMyTasks, timeline:renderTimeline, templates:renderTemplates, notifications:renderNotifications, settings:renderSettings };
+  const renderers = { overview:renderOverview, projects:renderProjects, "my-tasks":renderMyTasks, timeline:renderTimeline, templates:renderTemplates, notifications:renderNotifications, settings:renderSettings, "airtable-data":renderAirtableData };
   content.innerHTML = (renderers[state.page] || renderOverview)();
 }
 async function openTask(taskId) {
@@ -449,6 +529,16 @@ async function syncAirtable(button) {
 document.addEventListener("click",async(event)=>{
   const nav = event.target.closest("[data-nav]");
   if (nav) { event.preventDefault(); setNavigation(nav.dataset.nav); return; }
+  const airtableTable = event.target.closest("[data-airtable-table]");
+  if (airtableTable) {
+    state.airtableData.selectedTableId = airtableTable.dataset.airtableTable;
+    state.airtableData.query = "";
+    state.airtableData.offset = 0;
+    await loadAirtableRecords(0);
+    return;
+  }
+  const airtablePage = event.target.closest("[data-airtable-page]");
+  if (airtablePage) { await loadAirtableRecords(Number(airtablePage.dataset.airtablePage)); return; }
   const projectLink = event.target.closest("[data-project]");
   if (projectLink) { await openProject(projectLink.dataset.project); return; }
   const taskLink = event.target.closest("[data-task]");
@@ -487,6 +577,7 @@ document.addEventListener("click",async(event)=>{
     else if (action.dataset.action==="close-modal") modalRoot.innerHTML="";
     else if (action.dataset.action==="airtable-check") await checkAirtableSchema(action);
     else if (action.dataset.action==="airtable-sync") await syncAirtable(action);
+    else if (action.dataset.action==="airtable-refresh-data") await loadAirtableTables();
     else if (action.dataset.action==="mark-all-read") {
       for (const notification of state.data.notifications.filter((item)=>!item.isRead)) {
         try { await api(`/api/notifications/${encodeURIComponent(notification.id)}`,{method:"PATCH"}); } catch(error) { showToast(error.message,true); return; }
@@ -513,6 +604,11 @@ document.addEventListener("change",(event)=>{
   }
 });
 document.addEventListener("submit",async(event)=>{
+  if(event.target.id==="airtable-search-form") {
+    event.preventDefault();
+    state.airtableData.query = String(new FormData(event.target).get("query") || "").trim();
+    await loadAirtableRecords(0);
+  }
   if(event.target.id==="login-form") {
     event.preventDefault();
     const data=new FormData(event.target);

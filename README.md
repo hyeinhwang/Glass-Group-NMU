@@ -18,7 +18,7 @@ From the repository root, `npm start` starts the app and `npm test` runs its wor
 
 ## Airtable
 
-The app supports an administrator-triggered sync of all 12 NMU Airtable tables. Airtable owns reference/setup data; the app writes only the approved task status/date/assignee fields back to linked `Work` records. Airtable permissions, sync behavior, and conflict handling are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code.
+The app validates the 12 NMU operational tables, syncs every table in the connected base, and provides an administrator-only browser for read-only Airtable record snapshots. Airtable owns reference/setup data; the app writes only the approved task status/date/assignee fields back to linked `Work` records. Airtable permissions, sync behavior, and conflict handling are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code.
 
 ## Team handoff and current status
 

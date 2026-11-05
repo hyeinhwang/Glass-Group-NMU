@@ -191,6 +191,24 @@ h1 { margin-bottom: 7px; color: #193d40; font: 700 27px/1.2 "Manrope", sans-seri
 .notification-copy time { display: block; margin-top: 5px; color: #95a39e; font-size: 9px; }
 .notification-card .text-action { border: 0; background: none; color: var(--green); font-size: 9px; font-weight: 700; cursor: pointer; }
 .integration-panel { max-width: 780px; padding: 20px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+.airtable-table-picker { margin-bottom: 14px; }
+.airtable-table-chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 15px 15px; }
+.airtable-table-chip { display: grid; gap: 4px; min-width: 135px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: #42645e; text-align: left; cursor: pointer; }
+.airtable-table-chip:hover,.airtable-table-chip.selected { border-color: #78a99a; background: #f1f8f4; }
+.airtable-table-chip.selected { box-shadow: inset 0 0 0 1px #78a99a; }
+.airtable-table-chip span { font-size: 10px; font-weight: 700; }
+.airtable-table-chip small { color: #8b9b97; font-size: 9px; }
+.airtable-record-panel { max-width: none; }
+.airtable-search-form { display: flex; gap: 7px; }
+.airtable-search-form .search-input { min-width: 180px; }
+.airtable-record-wrap { max-height: 65vh; }
+.airtable-record-table { width: max-content; min-width: 100%; border-collapse: collapse; background: white; font-size: 10px; }
+.airtable-record-table th,.airtable-record-table td { max-width: 320px; padding: 10px 12px; border-bottom: 1px solid #edf1ee; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.airtable-record-table th { position: sticky; top: 0; z-index: 1; background: #f8fbf9; color: #6a817a; font-size: 9px; }
+.airtable-record-table th small { display: block; margin-top: 3px; color: #9aa8a2; font-size: 8px; font-weight: 400; }
+.airtable-record-id { color: #8a9b95; font: 9px ui-monospace,monospace; white-space: nowrap; }
+.airtable-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 15px; color: #82928d; font-size: 10px; }
+.airtable-pagination div { display: flex; gap: 7px; }
 .integration-panel h2 { margin: 0 0 6px; color: #315551; font: 700 14px "Manrope", sans-serif; }
 .integration-panel p { color: #82928d; font-size: 10px; line-height: 1.65; }
 .integration-callout { margin: 14px 0; padding: 12px 13px; border: 1px solid #dfece4; border-radius: 6px; background: #f5faf6; color: #52726a; font-size: 10px; line-height: 1.6; }
