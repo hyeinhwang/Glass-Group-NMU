@@ -488,17 +488,23 @@ async function runAirtableSync(user) {
   if (missingTables.length) {
     throw new Error(`The Airtable base is missing expected tables: ${missingTables.join(", ")}.`);
   }
-  for (const required of [
+  const requiredFields = [
     ["Session", ["Session Name", "Start Date", "End Date", "Site"]],
     ["Site", ["Program Name", "Program Location"]],
-    ["Steps", ["Unique", "Short Description", "Long Description", "Dependencies", "Days"]],
+    ["Steps", ["Unique", "Short Description", "Long Description", "Days"]],
     ["Users", ["Email Address", "First Name", "Last Name"]],
     ["Work", ["Unique", "Steps", "Session", "Due Date", "Completed Date", "Status", "Assignee"]]
-  ]) {
+  ];
+  for (const required of requiredFields) {
     const table = tablesByName.get(required[0]);
     const names = new Set(table.fields.map((field) => field.name));
     const missing = required[1].filter((field) => !names.has(field));
     if (missing.length) throw new Error(`Airtable table "${required[0]}" is missing fields: ${missing.join(", ")}.`);
+  }
+  const stepFields = new Set(tablesByName.get("Steps").fields.map((field) => field.name));
+  const stepDependencyField = ["Dependencies", "Dependancies"].find((name) => stepFields.has(name));
+  if (!stepDependencyField) {
+    throw new Error('Airtable table "Steps" is missing field "Dependencies" (the existing "Dependancies" spelling is also supported).');
   }
 
   const recordsByTable = new Map();
@@ -684,7 +690,7 @@ async function runAirtableSync(user) {
         completedAt, record.id, prior?.created_at || syncTime, syncTime);
       workToTask.set(record.id, taskId);
       taskStepIds.set(taskId, stepId);
-      workLinkedStepIds.set(taskId, linkedIds(stepFields, "Dependencies"));
+      workLinkedStepIds.set(taskId, linkedIds(stepFields, stepDependencyField));
       if (!priorRemote) {
         local = {
           status: local.status,

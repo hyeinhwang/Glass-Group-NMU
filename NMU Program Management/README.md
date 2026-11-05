@@ -38,7 +38,7 @@ Use the account selector in the top bar to switch demo identities. The selector 
 
 ## Airtable linked-table sync
 
-The app syncs the 12 tables shown in the NMU Airtable schema: `Users`, `Templates`, `Template List`, `Roles`, `Steps`, `Programs`, `Region`, `Site`, `Session`, `Instructors`, `Work`, and `WIP`. Add `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` to Railway Variables (or local `.env`) and give the token access to the base with `schema.bases:read`, `data.records:read`, and `data.records:write`. The secret is only used server-side and must never be committed or pasted into source.
+The app syncs the 12 tables shown in the NMU Airtable schema: `Users`, `Templates`, `Template List`, `Roles`, `Steps`, `Programs`, `Region`, `Site`, `Session`, `Instructors`, `Work`, and `WIP`. The `Steps` dependency link field may be named either `Dependencies` or `Dependancies` (the misspelling used in the existing base). Add `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` to Railway Variables (or local `.env`) and give the token access to the base with `schema.bases:read`, `data.records:read`, and `data.records:write`. The secret is only used server-side and must never be committed or pasted into source.
 
 An administrator opens **Settings → Airtable integration**, checks schema access, and selects **Sync all Airtable tables**. Sync is manual/on-demand. Airtable record IDs and linked-record field values are retained in the local database without automatically deleting Airtable records or local rows. `Session` records are projected as app programs; `Work` records linked to a session and step are projected as app tasks. The other tables are stored as linked reference snapshots in `airtable_records`.
 

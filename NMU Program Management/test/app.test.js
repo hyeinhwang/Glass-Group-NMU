@@ -377,7 +377,7 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       ["Templates", [text("Name")]],
       ["Template List", [text("List Name (Unique)"), dateField("Created"), statusField, link("Steps", "Steps")]],
       ["Roles", [text("Role Name"), statusField, link("Users", "Users"), link("Steps", "Steps"), link("Templates", "Templates")]],
-      ["Steps", [text("Unique"), text("Short Description"), text("Long Description"), link("Dependencies", "Steps"), numberField("Days"), link("Template", "Templates"), link("Roles", "Roles")]],
+      ["Steps", [text("Unique"), text("Short Description"), text("Long Description"), link("Dependancies", "Steps"), numberField("Days"), link("Template", "Templates"), link("Roles", "Roles")]],
       ["Programs", [text("Name")]],
       ["Region", [text("Name"), link("Site", "Site")]],
       ["Site", [text("Program Name"), link("Region", "Region"), link("Session", "Session"), text("Region Site"), text("Program Location"), link("Instructors", "Instructors"), link("Work", "Work")]],
@@ -395,7 +395,7 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     } }]);
     airtableRows.set("Steps", [{ id: "recStep", fields: {
       Unique: "Confirm the host", "Short Description": "Confirm the host.", "Long Description": "Agree on the pool schedule.",
-      Days: -5, Dependencies: []
+      Days: -5, Dependancies: []
     } }]);
     airtableRows.set("Work", [{ id: "recWork", fields: {
       Unique: "winter-host", Steps: [{ id: "recStep" }], Session: [{ id: "recSession" }],
