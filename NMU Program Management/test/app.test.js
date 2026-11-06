@@ -1,571 +1,223 @@
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { createServer as createHttpServer } from "node:http";
-import { createServer } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { createFixtureAirtable, WRITABLE_WORK_FIELDS } from "./helpers/fixture.js";
+import { startApp } from "./helpers/server.js";
 
-const projectRoot = fileURLToPath(new URL("../", import.meta.url));
-let serverProcess;
-let baseUrl;
-let temporaryDirectory;
+let airtable;
+let app;
+const today = () => new Date().toISOString().slice(0, 10);
 
-async function availablePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-
-async function request(path, userId = "u-catalina", options = {}) {
-  const response = await fetch(`${baseUrl}${path}`, {
+async function request(path, email = "admin@nmu.test", options = {}) {
+  const response = await fetch(`${app.url}${path}`, {
     ...options,
-    headers: { "content-type": "application/json", "x-demo-user": userId, ...(options.headers || {}) }
+    headers: { "content-type": "application/json", ...(email ? { "x-dev-user": email } : {}), ...(options.headers || {}) },
+    ...(options.body && typeof options.body !== "string" ? { body: JSON.stringify(options.body) } : {})
   });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: await response.json().catch(() => ({})) };
 }
+const patch = (path, email, body) => request(path, email, { method: "PATCH", body });
+const post = (path, email, body) => request(path, email, { method: "POST", body });
 
 before(async () => {
-  temporaryDirectory = await mkdtemp(join(tmpdir(), "nmu-pm-test-"));
-  const port = await availablePort();
-  baseUrl = `http://127.0.0.1:${port}`;
-  serverProcess = spawn(process.execPath, ["server.js"], {
-    cwd: projectRoot,
-    env: { ...process.env, PORT: String(port), NMU_DATABASE_PATH: join(temporaryDirectory, "test.sqlite") },
-    stdio: ["ignore", "pipe", "pipe"]
+  airtable = createFixtureAirtable();
+  const apiRoot = await airtable.start();
+  app = await startApp({
+    NMU_AUTH_MODE: "dev", AIRTABLE_API_KEY: "test-token", AIRTABLE_BASE_ID: airtable.baseId, AIRTABLE_API_ROOT: apiRoot
   });
-  let output = "";
-  serverProcess.stdout.on("data", (chunk) => { output += chunk.toString(); });
-  serverProcess.stderr.on("data", (chunk) => { output += chunk.toString(); });
-  for (let attempt = 0; attempt < 60; attempt++) {
-    if (serverProcess.exitCode !== null) throw new Error(`Test server exited early:\n${output}`);
-    try {
-      const response = await fetch(`${baseUrl}/api/bootstrap`, { headers: { "x-demo-user": "u-catalina" } });
-      if (response.ok) return;
-    } catch {}
-    await delay(100);
-  }
-  throw new Error(`Test server did not start:\n${output}`);
+  assert.equal(app.child.exitCode, null, app.output());
 });
-
 after(async () => {
-  if (serverProcess && serverProcess.exitCode === null) {
-    serverProcess.kill("SIGTERM");
-    await new Promise((resolve) => serverProcess.once("exit", resolve));
-  }
-  if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
+  await app?.stop();
+  await airtable?.close();
 });
 
-test("NMU project, dependency, access, and timeline workflows", async (t) => {
-  const plusDays = (days) => {
-    const date = new Date();
-    date.setUTCDate(date.getUTCDate() + days);
-    return date.toISOString().slice(0, 10);
-  };
-  let createdProjectId;
-  let createdTasks;
-
-  await t.test("seeds realistic demo data and template workflows", async () => {
+test("NMU workflows read and write Airtable directly", async (t) => {
+  await t.test("loads projects, tasks, users, sites and templates from Airtable", async () => {
     const result = await request("/api/bootstrap");
-    assert.equal(result.status, 200);
-    assert.equal(result.body.users.length, 7);
-    assert.equal(result.body.templates.length, 3);
-    assert.equal(result.body.projects.length, 6);
-    assert.ok(result.body.tasks.length >= 40 && result.body.tasks.length <= 60);
-    assert.ok(result.body.tasks.some((task) => task.isBlocked));
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.currentUser.role, "admin");
+    assert.equal(result.body.currentUser.roleLabel, "Admin");
+    assert.deepEqual(result.body.users.map((user) => user.role).sort(), ["admin", "admin", "contributor", "contributor", "manager"]);
+    assert.ok(result.body.users.every((user) => !("email" in user)));
+    assert.equal(result.body.projects.length, 2);
+    const winter = result.body.projects.find((project) => project.id === "recSessionWinter");
+    assert.equal(winter.name, "Everett Swim · Winter Session");
+    assert.equal(winter.location, "Everett, WA");
+    assert.equal(winter.progress, 33);
+    assert.equal(result.body.tasks.length, 4);
+    const host = result.body.tasks.find((task) => task.id === "recWorkHost");
+    assert.equal(host.status, "Completed");
+    assert.equal(host.dueDate, "2026-12-16", "due date comes from the Effective Due Date formula");
+    assert.equal(host.assigneeName, "Jordan Ellis", "assignee comes from Assigned To, not the Assignee lookup");
+    const clearances = result.body.tasks.find((task) => task.id === "recWorkClear");
+    assert.equal(clearances.isBlocked, true);
+    assert.deepEqual(clearances.dependencies.map((item) => item.id), ["recWorkRecruit"]);
+    assert.equal(result.body.templates[0].stepCount, 3);
+    assert.deepEqual(result.body.sites.map((site) => site.id), ["recSiteEverett"]);
   });
 
-  await t.test("creates a program and generates relative tasks", async () => {
-    const startDate = plusDays(250);
-    const result = await request("/api/projects", "u-jordan", {
-      method: "POST",
-      body: JSON.stringify({
-        name: "Test community swim program", programType: "Community", location: "Bellingham, WA",
-        hostOrganization: "Demo Host", startDate, endDate: plusDays(264),
-        templateId: "tpl-community", projectManagerId: "u-jordan",
-        primaryContact: "Morgan Lee", participants: 32, notes: "Created by automated test"
-      })
-    });
-    assert.equal(result.status, 201);
-    createdProjectId = result.body.projectId;
-    assert.equal(result.body.taskCount, 16);
-    const project = await request(`/api/projects/${createdProjectId}`, "u-jordan");
-    createdTasks = project.body.tasks;
-    assert.equal(project.status, 200);
-    assert.equal(createdTasks[0].dueDate, plusDays(130));
-    assert.ok(createdTasks.some((task) => task.dependencies.length > 0));
-    assert.equal(project.body.project.details.primaryContact, "Morgan Lee");
+  await t.test("assigns roles from Users.Rights and rejects unknown or unprivileged emails", async () => {
+    assert.equal((await request("/api/bootstrap", "norights@nmu.test")).status, 401);
+    assert.equal((await request("/api/bootstrap", "nobody@nmu.test")).status, 401);
+    assert.equal((await request("/api/bootstrap", null)).status, 401);
+    const manager = await request("/api/bootstrap", "manager@nmu.test");
+    assert.equal(manager.body.currentUser.role, "manager");
+    assert.equal(manager.body.projects.length, 2);
   });
 
-  await t.test("reassigns tasks, notifies the new owner, and records notes", async () => {
-    const task = createdTasks.find((item) => item.title === "Research funding opportunities");
-    const reassigned = await request(`/api/tasks/${task.id}/assignee`, "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ assignedUserId: "u-mary" })
-    });
-    assert.equal(reassigned.status, 200);
-    const previousOwner = await request("/api/bootstrap", "u-casey");
-    const newOwner = await request("/api/bootstrap", "u-mary");
-    assert.ok(!previousOwner.body.tasks.some((item) => item.id === task.id && item.assignedUserId === "u-casey"));
-    assert.ok(newOwner.body.tasks.some((item) => item.id === task.id && item.assignedUserId === "u-mary"));
-    assert.ok(newOwner.body.notifications.some((item) => item.message.includes(task.title)));
-    const comment = await request(`/api/tasks/${task.id}/comments`, "u-mary", {
-      method: "POST", body: JSON.stringify({ content: "Contacted the regional grant office." })
-    });
-    assert.equal(comment.status, 201);
-    const project = await request(`/api/projects/${createdProjectId}`, "u-jordan");
-    assert.ok(project.body.activities.some((item) => item.action === "Task reassigned"));
-    assert.ok(project.body.comments.some((item) => item.content === "Contacted the regional grant office."));
+  await t.test("contributors only see programs where they have assigned work", async () => {
+    const casey = await request("/api/bootstrap", "casey@nmu.test");
+    assert.equal(casey.body.currentUser.role, "contributor");
+    assert.deepEqual(casey.body.projects.map((project) => project.id), ["recSessionWinter"]);
+    assert.equal(casey.body.tasks.length, 3);
+    assert.equal((await request("/api/projects/recSessionSpring", "casey@nmu.test")).status, 404);
+    assert.equal((await request("/api/integrations/airtable/tables", "casey@nmu.test")).status, 403);
+    assert.equal((await request("/api/users", "casey@nmu.test")).status, 403);
+    assert.equal((await post("/api/projects", "casey@nmu.test", {})).status, 403);
   });
 
-  await t.test("blocks task completion until prerequisites are complete", async () => {
-    const backgroundCheck = createdTasks.find((task) => task.title === "Complete background checks");
-    const recruitInstructors = createdTasks.find((task) => task.title === "Recruit instructors");
-    const blocked = await request(`/api/tasks/${backgroundCheck.id}/status`, "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ status: "Completed" })
-    });
+  await t.test("enforces prerequisites and writes Task Status and Completed Date", async () => {
+    assert.equal((await patch("/api/tasks/recWorkClear/status", "casey@nmu.test", { status: "Completed" })).status, 404, "not Casey's task");
+    const blocked = await patch("/api/tasks/recWorkClear/status", "mary@nmu.test", { status: "Completed" });
     assert.equal(blocked.status, 409);
-    const prerequisite = await request(`/api/tasks/${recruitInstructors.id}/status`, "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ status: "Completed" })
-    });
-    assert.equal(prerequisite.status, 200);
-    const nowReady = await request(`/api/projects/${createdProjectId}`, "u-jordan");
-    assert.equal(nowReady.body.tasks.find((task) => task.id === backgroundCheck.id).isBlocked, false);
-    const completed = await request(`/api/tasks/${backgroundCheck.id}/status`, "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ status: "Completed" })
-    });
-    assert.equal(completed.status, 200);
+    assert.deepEqual(blocked.body.prerequisites, ["Recruit instructors"]);
+    const done = await patch("/api/tasks/recWorkRecruit/status", "casey@nmu.test", { status: "Completed" });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const work = airtable.record("Work", "recWorkRecruit").fields;
+    assert.equal(work["Task Status"], "Done");
+    assert.equal(work["Completed Date"], today());
+    const mary = await request("/api/bootstrap", "mary@nmu.test");
+    assert.ok(mary.body.notifications.some((item) => item.message === "Task is now ready: Complete clearances"));
+    assert.equal(mary.body.tasks.find((task) => task.id === "recWorkClear").isBlocked, false);
+    const reopened = await patch("/api/tasks/recWorkRecruit/status", "casey@nmu.test", { status: "In Progress" });
+    assert.equal(reopened.status, 200);
+    assert.equal(airtable.record("Work", "recWorkRecruit").fields["Completed Date"], null);
+    assert.equal(airtable.record("Work", "recWorkRecruit").fields["Task Status"], "In Progress");
+    const override = await patch("/api/tasks/recWorkClear/status", "admin@nmu.test", { status: "Completed", overrideReason: "Host confirmed clearances directly" });
+    assert.equal(override.status, 200);
+    const project = await request("/api/projects/recSessionWinter", "admin@nmu.test");
+    assert.ok(project.body.activities.some((item) => item.action === "Dependency override" && item.userName === "Ada Admin"));
+    assert.ok(project.body.activities.some((item) => item.action === "Status changed"));
   });
 
-  await t.test("previews and applies date shifts without moving completed tasks", async () => {
-    const before = await request(`/api/projects/${createdProjectId}`, "u-jordan");
-    const completedTask = before.body.tasks.find((task) => task.title === "Complete background checks");
-    const openTask = before.body.tasks.find((task) => task.status !== "Completed");
-    const manualDeadline = plusDays(300);
-    const override = await request(`/api/tasks/${openTask.id}/due-date`, "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ dueDate: manualDeadline })
+  await t.test("stores comments and activity in Airtable", async () => {
+    const comment = await post("/api/tasks/recWorkRecruit/comments", "casey@nmu.test", { content: "Two instructor referrals from the host." });
+    assert.equal(comment.status, 201);
+    const stored = airtable.records("Comments").at(-1).fields;
+    assert.deepEqual(stored, { Comment: "Two instructor referrals from the host.", Work: ["recWorkRecruit"], Author: ["recCasey"] });
+    const activity = airtable.records("Activity Log").at(-1).fields;
+    assert.equal(activity.Action, "Comment added");
+    assert.deepEqual(activity.Session, ["recSessionWinter"]);
+    const project = await request("/api/projects/recSessionWinter", "manager@nmu.test");
+    assert.equal(project.body.comments[0].userName, "Casey Nguyen");
+    assert.equal(project.body.comments[0].taskId, "recWorkRecruit");
+    assert.equal((await post("/api/tasks/recWorkSpringHost/comments", "casey@nmu.test", { content: "x" })).status, 404);
+    assert.equal((await post("/api/tasks/recWorkRecruit/comments", "casey@nmu.test", { content: " " })).status, 400);
+  });
+
+  await t.test("reassigns with Assigned To and notifies the new owner", async () => {
+    assert.equal((await patch("/api/tasks/recWorkRecruit/assignee", "casey@nmu.test", { assignedUserId: "recMary" })).status, 403);
+    assert.equal((await patch("/api/tasks/recWorkRecruit/assignee", "manager@nmu.test", { assignedUserId: "recNoRights" })).status, 400);
+    const result = await patch("/api/tasks/recWorkRecruit/assignee", "manager@nmu.test", { assignedUserId: "recMary" });
+    assert.equal(result.status, 200);
+    assert.deepEqual(airtable.record("Work", "recWorkRecruit").fields["Assigned To"], ["recMary"]);
+    const mary = await request("/api/bootstrap", "mary@nmu.test");
+    const notice = mary.body.notifications.find((item) => item.message === "New task assigned: Recruit instructors");
+    assert.ok(notice);
+    assert.equal((await patch(`/api/notifications/${notice.id}`, "casey@nmu.test", {})).status, 404, "cannot mark someone else's notification");
+    assert.equal((await patch(`/api/notifications/${notice.id}`, "mary@nmu.test", {})).status, 200);
+    assert.equal(airtable.record("Notifications", notice.id).fields.Read, true);
+  });
+
+  await t.test("overrides deadlines with Due Date Override", async () => {
+    assert.equal((await patch("/api/tasks/recWorkRecruit/due-date", "mary@nmu.test", { dueDate: "2027-01-01" })).status, 403);
+    const result = await patch("/api/tasks/recWorkRecruit/due-date", "manager@nmu.test", { dueDate: "2027-01-02" });
+    assert.equal(result.status, 200);
+    assert.equal(airtable.record("Work", "recWorkRecruit").fields["Due Date Override"], "2027-01-02");
+    const task = (await request("/api/bootstrap", "manager@nmu.test")).body.tasks.find((item) => item.id === "recWorkRecruit");
+    assert.equal(task.dueDate, "2027-01-02");
+    assert.equal(task.dueDateOverride, true);
+  });
+
+  let newProjectId;
+  await t.test("creates a Session and its Work rows from a template", async () => {
+    const result = await post("/api/projects", "manager@nmu.test", {
+      name: "Clinic Session", siteId: "recSiteEverett", templateId: "recTplClinic", startDate: "2027-03-01", endDate: "2027-03-03"
     });
-    assert.equal(override.status, 200);
-    const updatedBefore = await request(`/api/projects/${createdProjectId}`, "u-jordan");
-    const overriddenTask = updatedBefore.body.tasks.find((task) => task.id === openTask.id);
-    const newStartDate = plusDays(260);
-    const preview = await request("/api/projects/date-preview", "u-jordan", {
-      method: "POST", body: JSON.stringify({ projectId: createdProjectId, startDate: newStartDate })
+    assert.equal(result.status, 201, JSON.stringify(result.body));
+    assert.equal(result.body.taskCount, 3);
+    newProjectId = result.body.projectId;
+    assert.deepEqual(airtable.record("Session", newProjectId).fields, {
+      "Session Name": "Clinic Session", "Start Date": "2027-03-01", Site: ["recSiteEverett"], "End Date": "2027-03-03"
     });
+    const created = airtable.records("Work").filter((record) => record.fields.Session[0] === newProjectId);
+    assert.equal(created.length, 3);
+    assert.deepEqual(created.map((record) => record.fields["Assigned To"]), [["recManager"], ["recManager"], ["recCasey"]]);
+    assert.ok(created.every((record) => record.fields["Task Status"] === "Not Started"));
+    const project = await request(`/api/projects/${newProjectId}`, "manager@nmu.test");
+    assert.deepEqual(project.body.tasks.map((task) => task.dueDate).sort(), ["2027-01-30", "2027-02-09", "2027-02-19"]);
+    const casey = await request("/api/bootstrap", "casey@nmu.test");
+    assert.ok(casey.body.notifications.some((item) => item.message === "New task assigned: Complete clearances — Clinic Session"));
+    assert.equal((await post("/api/projects", "manager@nmu.test", { name: "Bad", siteId: "recSiteEverett", templateId: "recTplClinic", startDate: "2027-03-05", endDate: "2027-03-01" })).status, 400);
+  });
+
+  await t.test("previews and applies a timeline shift without moving completed or overridden tasks", async () => {
+    const project = await request(`/api/projects/${newProjectId}`, "manager@nmu.test");
+    const [first, second, third] = project.body.tasks.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    assert.equal((await patch(`/api/tasks/${first.id}/status`, "manager@nmu.test", { status: "Completed" })).status, 200);
+    assert.equal((await patch(`/api/tasks/${second.id}/due-date`, "manager@nmu.test", { dueDate: "2027-02-14" })).status, 200);
+    const preview = await post("/api/projects/date-preview", "manager@nmu.test", { projectId: newProjectId, startDate: "2027-03-11" });
     assert.equal(preview.status, 200);
     assert.equal(preview.body.shiftDays, 10);
-    assert.ok(!preview.body.changes.some((change) => change.id === openTask.id));
-    assert.ok(!preview.body.changes.some((change) => change.id === completedTask.id));
-    const update = await request(`/api/projects/${createdProjectId}/start-date`, "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ startDate: newStartDate })
-    });
-    assert.equal(update.status, 200);
-    const afterUpdate = await request(`/api/projects/${createdProjectId}`, "u-jordan");
-    assert.equal(afterUpdate.body.tasks.find((task) => task.id === completedTask.id).dueDate, completedTask.dueDate);
-    assert.equal(overriddenTask.dueDate, manualDeadline);
-    assert.equal(afterUpdate.body.tasks.find((task) => task.id === openTask.id).dueDate, manualDeadline);
-    assert.equal(afterUpdate.body.tasks.find((task) => task.id === openTask.id).dueDateOverride, true);
-    assert.ok(afterUpdate.body.activities.some((activity) => activity.action === "Timeline updated"));
-    assert.ok(afterUpdate.body.activities.some((activity) => activity.action === "Deadline overridden"));
-    const employeeOverride = await request(`/api/tasks/${openTask.id}/due-date`, "u-mary", {
-      method: "PATCH", body: JSON.stringify({ dueDate: plusDays(301) })
-    });
-    assert.equal(employeeOverride.status, 403);
+    assert.deepEqual(preview.body.changes, [{ id: third.id, title: third.title, oldDate: "2027-02-19", newDate: "2027-03-01" }]);
+    assert.equal((await patch(`/api/projects/${newProjectId}/start-date`, "casey@nmu.test", { startDate: "2027-03-11" })).status, 403);
+    const applied = await patch(`/api/projects/${newProjectId}/start-date`, "manager@nmu.test", { startDate: "2027-03-11" });
+    assert.equal(applied.status, 200);
+    assert.equal(airtable.record("Session", newProjectId).fields["Start Date"], "2027-03-11");
+    assert.equal(airtable.record("Session", newProjectId).fields["End Date"], "2027-03-13");
+    assert.equal(airtable.record("Work", first.id).fields["Due Date Override"], "2027-01-30", "completed task is pinned");
+    const after = await request(`/api/projects/${newProjectId}`, "manager@nmu.test");
+    const dates = Object.fromEntries(after.body.tasks.map((task) => [task.id, task.dueDate]));
+    assert.deepEqual(dates, { [first.id]: "2027-01-30", [second.id]: "2027-02-14", [third.id]: "2027-03-01" });
+    assert.ok(after.body.activities.some((item) => item.action === "Timeline updated"));
   });
 
-  await t.test("enforces role permissions and partner project/task visibility", async () => {
-    const cannotCreate = await request("/api/projects", "u-mary", {
-      method: "POST", body: JSON.stringify({})
-    });
-    assert.equal(cannotCreate.status, 403);
-    const partnerBootstrap = await request("/api/bootstrap", "u-partner");
-    assert.equal(partnerBootstrap.body.users.length, 7);
-    assert.ok(partnerBootstrap.body.users.every((user) => !("email" in user)));
-    assert.deepEqual(partnerBootstrap.body.projects.map((project) => project.id), ["p-seattle"]);
-    assert.deepEqual(partnerBootstrap.body.tasks.map((task) => task.assignedUserId), ["u-partner"]);
-    const unrelated = await request("/api/projects/p-tacoma", "u-partner");
-    assert.equal(unrelated.status, 404);
-    const partnerTask = partnerBootstrap.body.tasks[0];
-    const partnerUpdate = await request(`/api/tasks/${partnerTask.id}/status`, "u-partner", {
-      method: "PATCH", body: JSON.stringify({ status: "In Progress" })
-    });
-    assert.equal(partnerUpdate.status, 200);
-    const unrelatedTaskComment = await request("/api/tasks/p-seattle-task-2/comments", "u-partner", {
-      method: "POST", body: JSON.stringify({ content: "Comment on an unassigned internal task" })
-    });
-    assert.equal(unrelatedTaskComment.status, 404);
-    const partnerProject = await request("/api/projects/p-seattle", "u-partner");
-    assert.equal(partnerProject.body.members.length, 1);
-    assert.equal(partnerProject.body.tasks.length, 1);
-    assert.deepEqual(partnerProject.body.project.details, {});
-  });
-
-  await t.test("allows administrators to change reusable template tasks", async () => {
-    const before = await request("/api/templates/tpl-clinic", "u-catalina");
-    assert.equal(before.status, 200);
-    const changed = structuredClone(before.body);
-    changed.name = "Updated Swim Safety Clinic";
-    changed.tasks[0].title = "Confirm local clinic host";
-    changed.tasks[0].relativeDueDays = -61;
-    const saved = await request("/api/templates/tpl-clinic", "u-catalina", {
-      method: "PATCH", body: JSON.stringify({ name: changed.name, description: changed.description, tasks: changed.tasks })
-    });
-    assert.equal(saved.status, 200);
-    const afterSave = await request("/api/templates/tpl-clinic", "u-catalina");
-    assert.equal(afterSave.body.name, changed.name);
-    assert.equal(afterSave.body.tasks[0].title, changed.tasks[0].title);
-    const unauthorized = await request("/api/templates/tpl-clinic", "u-jordan", {
-      method: "PATCH", body: JSON.stringify({ name: changed.name, description: changed.description, tasks: changed.tasks })
-    });
-    assert.equal(unauthorized.status, 403);
-  });
-
-  await t.test("requires production sign-in and protects administrator actions", async () => {
-    const authDirectory = await mkdtemp(join(tmpdir(), "nmu-auth-test-"));
-    const authPort = await availablePort();
-    const authUrl = `http://127.0.0.1:${authPort}`;
-    const adminEmail = "initial-admin@nmu.test";
-    const adminPassword = "test-admin-password-123";
-    const authServer = spawn(process.execPath, ["server.js"], {
-      cwd: projectRoot,
-      env: {
-        ...process.env, NODE_ENV: "production", NMU_AUTH_MODE: "required",
-        NMU_ADMIN_EMAIL: adminEmail, NMU_ADMIN_PASSWORD: adminPassword, NMU_ADMIN_NAME: "Initial Admin",
-        NMU_DATABASE_PATH: join(authDirectory, "production.sqlite"), PORT: String(authPort)
-      },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let serverOutput = "";
-    authServer.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
-    authServer.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
-    const authRequest = async (path, { method = "GET", cookie = "", body, origin = `${authUrl}` } = {}) => {
-      const response = await fetch(`${authUrl}${path}`, {
-        method,
-        headers: {
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...(cookie ? { cookie } : {}),
-          ...(origin ? { origin } : {}),
-          "x-demo-user": "u-catalina"
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) })
-      });
-      return { status: response.status, body: await response.json().catch(() => ({})), setCookie: response.headers.get("set-cookie") || "" };
-    };
-    try {
-      let ready = false;
-      for (let attempt = 0; attempt < 60; attempt++) {
-        if (authServer.exitCode !== null) throw new Error(`Auth test server exited early:\n${serverOutput}`);
-        try {
-          const response = await fetch(`${authUrl}/api/auth/config`);
-          if (response.ok) { ready = true; break; }
-        } catch {}
-        await delay(100);
+  await t.test("never writes Work formula or lookup fields", () => {
+    const workWrites = airtable.writes.filter((write) => write.table === "Work");
+    assert.ok(workWrites.length > 5);
+    for (const write of workWrites) {
+      for (const record of write.records) {
+        const allowed = write.method === "POST" ? [...WRITABLE_WORK_FIELDS, "Steps", "Session"] : WRITABLE_WORK_FIELDS;
+        for (const name of Object.keys(record.fields)) assert.ok(allowed.includes(name), `${write.method} wrote Work.${name}`);
       }
-      assert.equal(ready, true, `Auth test server did not start:\n${serverOutput}`);
-
-      const config = await authRequest("/api/auth/config");
-      assert.equal(config.body.required, true);
-      assert.equal(config.body.administratorConfigured, true);
-      const spoofed = await authRequest("/api/bootstrap");
-      assert.equal(spoofed.status, 401);
-      const wrongOrigin = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: adminEmail, password: adminPassword }, origin: "https://attacker.example"
-      });
-      assert.equal(wrongOrigin.status, 403);
-      const badLogin = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: adminEmail, password: "incorrect-password" }
-      });
-      assert.equal(badLogin.status, 401);
-      const login = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: adminEmail, password: adminPassword }
-      });
-      assert.equal(login.status, 200);
-      assert.match(login.setCookie, /HttpOnly/);
-      assert.match(login.setCookie, /SameSite=Strict/);
-      assert.match(login.setCookie, /Secure/);
-      const adminCookie = login.setCookie.split(";")[0];
-      const bootstrap = await authRequest("/api/bootstrap", { cookie: adminCookie });
-      assert.equal(bootstrap.status, 200);
-      assert.equal(bootstrap.body.currentUser.email, adminEmail);
-      assert.equal(bootstrap.body.projects.length, 0);
-      const browserBootstrap = await authRequest("/api/bootstrap", { cookie: adminCookie, origin: "" });
-      assert.equal(browserBootstrap.status, 200);
-
-      const created = await authRequest("/api/users", {
-        method: "POST", cookie: adminCookie,
-        body: { name: "Team Member", email: "member@nmu.test", role: "employee", password: "member-test-password-456" }
-      });
-      assert.equal(created.status, 201);
-      assert.ok(!JSON.stringify(created.body).includes("password_hash"));
-      const accountList = await authRequest("/api/users", { cookie: adminCookie });
-      assert.equal(accountList.status, 200);
-      assert.equal(accountList.body.users.find((item) => item.email === "member@nmu.test").active, true);
-      const duplicate = await authRequest("/api/users", {
-        method: "POST", cookie: adminCookie,
-        body: { name: "Team Member", email: "member@nmu.test", role: "employee", password: "member-test-password-456" }
-      });
-      assert.equal(duplicate.status, 409);
-
-      const memberLogin = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: "member@nmu.test", password: "member-test-password-456" }
-      });
-      assert.equal(memberLogin.status, 200);
-      assert.equal(memberLogin.body.user.role, "employee");
-      const memberCookie = memberLogin.setCookie.split(";")[0];
-      const changedPassword = await authRequest("/api/auth/password", {
-        method: "PATCH", cookie: memberCookie,
-        body: { currentPassword: "member-test-password-456", newPassword: "member-updated-password-789" }
-      });
-      assert.equal(changedPassword.status, 200);
-      const oldPasswordLogin = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: "member@nmu.test", password: "member-test-password-456" }
-      });
-      assert.equal(oldPasswordLogin.status, 401);
-      const updatedPasswordLogin = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: "member@nmu.test", password: "member-updated-password-789" }
-      });
-      assert.equal(updatedPasswordLogin.status, 200);
-      const updatedMemberCookie = updatedPasswordLogin.setCookie.split(";")[0];
-      const forbidden = await authRequest("/api/users", {
-        method: "POST", cookie: updatedMemberCookie,
-        body: { name: "Admin Two", email: "admin-two@nmu.test", role: "admin", password: "another-test-password-789" }
-      });
-      assert.equal(forbidden.status, 403);
-      const disableSelf = await authRequest(`/api/users/${encodeURIComponent(created.body.user.id)}/active`, {
-        method: "PATCH", cookie: updatedMemberCookie, body: { active: false }
-      });
-      assert.equal(disableSelf.status, 403);
-      const disableMember = await authRequest(`/api/users/${encodeURIComponent(created.body.user.id)}/active`, {
-        method: "PATCH", cookie: adminCookie, body: { active: false }
-      });
-      assert.equal(disableMember.status, 200);
-      const revokedSession = await authRequest("/api/bootstrap", { cookie: updatedMemberCookie });
-      assert.equal(revokedSession.status, 401);
-      const enableMember = await authRequest(`/api/users/${encodeURIComponent(created.body.user.id)}/active`, {
-        method: "PATCH", cookie: adminCookie, body: { active: true }
-      });
-      assert.equal(enableMember.status, 200);
-      const logout = await authRequest("/api/auth/logout", { method: "POST", cookie: adminCookie });
-      assert.equal(logout.status, 200);
-      const afterLogout = await authRequest("/api/bootstrap", { cookie: adminCookie });
-      assert.equal(afterLogout.status, 401);
-    } finally {
-      if (authServer.exitCode === null) {
-        authServer.kill("SIGTERM");
-        await new Promise((resolve) => authServer.once("exit", resolve));
-      }
-      await rm(authDirectory, { recursive: true, force: true });
     }
+    assert.ok(airtable.writes.every((write) => write.records.length <= 10));
   });
 
-  await t.test("syncs linked Airtable tables and writes only approved Work fields", async () => {
-    const adminEmail = "airtable-admin@nmu.test";
-    const adminPassword = "airtable-admin-password-2026";
-    const tableNames = ["Users", "Templates", "Template List", "Roles", "Steps", "Programs", "Region", "Site", "Session", "Instructors", "Work", "WIP", "Activity Log", "Comments", "Notifications"];
-    const tableIds = new Map(tableNames.map((name, index) => [name, `tbl${index + 1}`]));
-    const link = (name, target) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "multipleRecordLinks", options: { linkedTableId: tableIds.get(target) } });
-    const text = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "singleLineText", options: {} });
-    const dateField = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "date", options: {} });
-    const numberField = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "number", options: {} });
-    const statusField = { id: "fldStatus", name: "Status", type: "singleSelect", options: { choices: ["Not Started", "In Progress", "Done"].map((name) => ({ name })) } };
-    const schemaFields = new Map([
-      ["Users", [text("Email Address"), text("First Name"), text("Last Name"), link("Roles", "Roles")]],
-      ["Templates", [text("Name")]],
-      ["Template List", [text("List Name (Unique)"), dateField("Created"), statusField, link("Steps", "Steps")]],
-      ["Roles", [text("Role Name"), statusField, link("Users", "Users"), link("Steps", "Steps"), link("Templates", "Templates")]],
-      ["Steps", [text("Unique"), text("Short Description"), text("Long Description"), link("Dependancies", "Steps"), numberField("Days"), link("Template", "Templates"), link("Roles", "Roles")]],
-      ["Programs", [text("Name")]],
-      ["Region", [text("Name"), link("Site", "Site")]],
-      ["Site", [text("Program Name"), link("Region", "Region"), link("Session", "Session"), text("Region Site"), text("Program Location"), link("Instructors", "Instructors"), link("Work", "Work")]],
-      ["Session", [text("Session Name"), dateField("Start Date"), numberField("Duration (Days)"), dateField("End Date"), link("Site", "Site"), text("Region Site Session"), statusField, numberField("Program Hours"), link("Instructors", "Instructors"), link("Work", "Work")]],
-      ["Instructors", [text("Instructor Name"), link("Site", "Site"), text("Email"), link("Session", "Session")]],
-      ["Work", [text("Unique"), text("Notes"), link("Steps", "Steps"), link("Session", "Session"), numberField("Days (from Steps)"), dateField("Start Date (from Session)"), dateField("Due Date"), dateField("Completed Date"), statusField, link("Assignee", "Users")]],
-      ["WIP", [text("Name")]],
-      ["Activity Log", [text("Name"), text("Action")]],
-      ["Comments", [text("Name"), text("Comment")]],
-      ["Notifications", [text("Name"), text("Message")]]
-    ]);
-    const airtableRows = new Map(tableNames.map((name) => [name, []]));
-    airtableRows.set("Activity Log", [{ id: "recActivity", fields: { Name: "Program update", Action: "Schedule confirmed" } }]);
-    airtableRows.set("Comments", [{ id: "recComment", fields: { Name: "Host notes", Comment: "Pool schedule confirmed" } }]);
-    airtableRows.set("Notifications", [{ id: "recNotification", fields: { Name: "Deadline reminder", Message: "Supplies due soon" } }]);
-    airtableRows.set("Users", [{ id: "recAdmin", fields: { "Email Address": adminEmail, "First Name": "Initial", "Last Name": "Admin" } }]);
-    airtableRows.set("Site", [{ id: "recSite", fields: { "Program Name": "Regional Swim", "Program Location": "Everett, WA" } }]);
-    airtableRows.set("Session", [{ id: "recSession", fields: {
-      "Session Name": "Winter Session", "Start Date": "2027-01-01", "Duration (Days)": 7,
-      Site: [{ id: "recSite" }], Status: "Planning"
-    } }]);
-    airtableRows.set("Steps", [{ id: "recStep", fields: {
-      Unique: "Confirm the host", "Short Description": "Confirm the host.", "Long Description": "Agree on the pool schedule.",
-      Days: -5, Dependancies: []
-    } }]);
-    airtableRows.set("Work", [{ id: "recWork", fields: {
-      Unique: "winter-host", Steps: [{ id: "recStep" }], Session: [{ id: "recSession" }],
-      "Days (from Steps)": -5, "Due Date": "2026-12-27", "Completed Date": null,
-      Status: "Not Started", Assignee: [{ id: "recAdmin" }]
-    } }]);
-    const patchCalls = [];
-    const mockAirtable = createHttpServer(async (request, response) => {
-      const url = new URL(request.url, "http://localhost");
-      const json = (status, body) => {
-        response.writeHead(status, { "content-type": "application/json" });
-        response.end(JSON.stringify(body));
-      };
-      if (url.pathname === "/v0/meta/bases/appMock/tables") {
-        return json(200, { tables: tableNames.map((name) => ({
-          id: tableIds.get(name), name,
-          fields: schemaFields.get(name).map((field) => ({ ...field, options: {
-            ...field.options, linkedTableId: field.options?.linkedTableId
-          } }))
-        })) });
-      }
-      const [, version, baseId, tableId] = url.pathname.split("/");
-      const tableName = [...tableIds].find(([, id]) => id === decodeURIComponent(tableId))?.[0];
-      if (version !== "v0" || baseId !== "appMock" || !tableName) return json(404, { error: "Not found" });
-      if (request.method === "GET") return json(200, { records: airtableRows.get(tableName) });
-      if (request.method === "PATCH" && tableName === "Work") {
-        let body = "";
-        for await (const chunk of request) body += chunk;
-        const updates = JSON.parse(body).records;
-        patchCalls.push(...updates);
-        for (const update of updates) {
-          const record = airtableRows.get("Work").find((item) => item.id === update.id);
-          Object.assign(record.fields, update.fields);
-        }
-        return json(200, { records: updates.map((update) => ({
-          id: update.id, fields: airtableRows.get("Work").find((item) => item.id === update.id).fields
-        })) });
-      }
-      return json(405, { error: "Method not allowed" });
-    });
-    await new Promise((resolve) => mockAirtable.listen(0, "127.0.0.1", resolve));
-    const mockPort = mockAirtable.address().port;
-    const authDirectory = await mkdtemp(join(tmpdir(), "nmu-airtable-test-"));
-    const authPort = await availablePort();
-    const authUrl = `http://127.0.0.1:${authPort}`;
-    const authServer = spawn(process.execPath, ["server.js"], {
-      cwd: projectRoot,
-      env: {
-        ...process.env, NODE_ENV: "production", NMU_AUTH_MODE: "required",
-        NMU_ADMIN_EMAIL: adminEmail, NMU_ADMIN_PASSWORD: adminPassword, NMU_ADMIN_NAME: "Initial Admin",
-        AIRTABLE_API_KEY: "test-token", AIRTABLE_BASE_ID: "appMock",
-        AIRTABLE_API_ROOT: `http://127.0.0.1:${mockPort}/v0`,
-        NMU_DATABASE_PATH: join(authDirectory, "airtable.sqlite"), PORT: String(authPort)
-      },
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let serverOutput = "";
-    authServer.stdout.on("data", (chunk) => { serverOutput += chunk.toString(); });
-    authServer.stderr.on("data", (chunk) => { serverOutput += chunk.toString(); });
-    const authRequest = async (path, { method = "GET", cookie = "", body } = {}) => {
-      const response = await fetch(`${authUrl}${path}`, {
-        method,
-        headers: {
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...(cookie ? { cookie } : {}),
-          origin: authUrl
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) })
-      });
-      return {
-        status: response.status,
-        body: await response.json().catch(() => ({})),
-        setCookie: response.headers.get("set-cookie") || ""
-      };
-    };
-    try {
-      let ready = false;
-      for (let attempt = 0; attempt < 60; attempt++) {
-        if (authServer.exitCode !== null) throw new Error(`Airtable test server exited early:\n${serverOutput}`);
-        try {
-          if ((await fetch(`${authUrl}/api/auth/config`)).ok) { ready = true; break; }
-        } catch {}
-        await delay(100);
-      }
-      assert.equal(ready, true, `Airtable test server did not start:\n${serverOutput}`);
-      const login = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: adminEmail, password: adminPassword }
-      });
-      assert.equal(login.status, 200);
-      const cookie = login.setCookie.split(";")[0];
-      const schema = await authRequest("/api/integrations/airtable/schema", { cookie });
-      assert.equal(schema.status, 200);
-      assert.equal(schema.body.tables.length, 15);
-      const firstSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
-      assert.equal(firstSync.status, 200, JSON.stringify(firstSync.body));
-      assert.equal(firstSync.body.projects, 1);
-      assert.equal(firstSync.body.tasks, 1);
-      assert.equal(Object.keys(firstSync.body.tables).length, 15);
-      assert.equal(firstSync.body.tables["Activity Log"], 1);
-      assert.equal(firstSync.body.tables.Comments, 1);
-      assert.equal(firstSync.body.tables.Notifications, 1);
-      assert.equal(firstSync.body.updatedWorkRecords, 0);
-      const syncedTables = await authRequest("/api/integrations/airtable/tables", { cookie });
-      assert.equal(syncedTables.status, 200);
-      assert.equal(syncedTables.body.tables.length, 15);
-      const stepsTable = syncedTables.body.tables.find((table) => table.name === "Steps");
-      const stepRecords = await authRequest(`/api/integrations/airtable/tables/${stepsTable.id}/records?limit=10`, { cookie });
-      assert.equal(stepRecords.status, 200);
-      assert.equal(stepRecords.body.total, 1);
-      assert.equal(stepRecords.body.records[0].fields.Dependancies.length, 0);
-      assert.equal(stepRecords.body.recordLabels.recStep, "Confirm the host");
-      const activityTable = syncedTables.body.tables.find((table) => table.name === "Activity Log");
-      const activityRecords = await authRequest(`/api/integrations/airtable/tables/${activityTable.id}/records`, { cookie });
-      assert.equal(activityRecords.body.records[0].fields.Action, "Schedule confirmed");
-      const addEmployee = await authRequest("/api/users", {
-        method: "POST", cookie, body: {
-          name: "Table Viewer", email: "table-viewer@nmu.test",
-          role: "employee", password: "table-viewer-password-2026"
-        }
-      });
-      assert.equal(addEmployee.status, 201);
-      const employeeLogin = await authRequest("/api/auth/login", {
-        method: "POST", body: { email: "table-viewer@nmu.test", password: "table-viewer-password-2026" }
-      });
-      const employeeCookie = employeeLogin.setCookie.split(";")[0];
-      const deniedTableRead = await authRequest("/api/integrations/airtable/tables", { cookie: employeeCookie });
-      assert.equal(deniedTableRead.status, 403);
-      const bootstrap = await authRequest("/api/bootstrap", { cookie });
-      assert.equal(bootstrap.body.projects[0].name, "Regional Swim · Winter Session");
-      assert.equal(bootstrap.body.projects[0].location, "Everett, WA");
-      assert.equal(bootstrap.body.tasks[0].title, "Confirm the host.");
-      assert.equal(bootstrap.body.tasks[0].assigneeName, "Initial Admin");
+  await t.test("administrators browse live Airtable tables and check the schema", async () => {
+    const schema = await request("/api/integrations/airtable/schema");
+    assert.equal(schema.status, 200);
+    assert.deepEqual(schema.body.missingTables, []);
+    assert.deepEqual(schema.body.missingFields, []);
+    assert.deepEqual(schema.body.computedWriteFields, []);
+    const tables = await request("/api/integrations/airtable/tables");
+    assert.equal(tables.body.tables.length, 12, "divider tables are hidden");
+    assert.ok(!tables.body.tables.some((table) => table.name.endsWith("->")));
+    const steps = tables.body.tables.find((table) => table.name === "Steps");
+    const records = await request(`/api/integrations/airtable/tables/${steps.id}/records?limit=2&q=instructors`);
+    assert.equal(records.status, 200);
+    assert.equal(records.body.total, 1);
+    assert.equal(records.body.records[0].id, "recStepRecruit");
+    assert.equal(records.body.recordLabels.recTplClinic, "Swim Safety Clinic");
+    assert.equal((await request("/api/integrations/airtable/tables/tblMissing/records")).status, 404);
+    const users = await request("/api/users");
+    assert.equal(users.body.users.find((item) => item.id === "recNoRights").roleLabel, "No access");
+  });
 
-      const taskId = bootstrap.body.tasks[0].id;
-      const localUpdate = await authRequest(`/api/tasks/${taskId}/status`, {
-        method: "PATCH", cookie, body: { status: "Completed" }
-      });
-      assert.equal(localUpdate.status, 200);
-      const outboundSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
-      assert.equal(outboundSync.status, 200);
-      assert.equal(outboundSync.body.updatedWorkRecords, 1);
-      assert.deepEqual(Object.keys(patchCalls[0].fields).sort(), ["Completed Date", "Status"]);
-      assert.equal(patchCalls[0].fields.Status, "Done");
-      assert.ok(patchCalls[0].fields["Completed Date"]);
-      assert.equal(airtableRows.get("Work")[0].fields.Status, "Done");
-
-      const localConflict = await authRequest(`/api/tasks/${taskId}/status`, {
-        method: "PATCH", cookie, body: { status: "Not Started" }
-      });
-      assert.equal(localConflict.status, 200);
-      airtableRows.get("Work")[0].fields.Status = "In Progress";
-      airtableRows.get("Work")[0].fields["Completed Date"] = null;
-      const conflictSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
-      assert.equal(conflictSync.status, 200);
-      assert.equal(conflictSync.body.conflicts.length, 1);
-      assert.equal(conflictSync.body.conflicts[0].field, "status");
-      assert.equal(conflictSync.body.updatedWorkRecords, 0);
-    } finally {
-      if (authServer.exitCode === null) {
-        authServer.kill("SIGTERM");
-        await new Promise((resolve) => authServer.once("exit", resolve));
-      }
-      await new Promise((resolve, reject) => mockAirtable.close((error) => error ? reject(error) : resolve()));
-      await rm(authDirectory, { recursive: true, force: true });
-    }
+  await t.test("recovers from Airtable 429 rate limits", async () => {
+    airtable.failNext(3, 429);
+    const result = await request("/api/bootstrap", "manager@nmu.test");
+    assert.equal(result.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.projects.length, 3);
   });
 });
