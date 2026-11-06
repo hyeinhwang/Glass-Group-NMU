@@ -8,9 +8,9 @@ import {
 } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import {
-  AIRTABLE_TABLE_NAMES, appStatusToAirtable, airtableStatusToApp,
-  fetchAirtableRecords, fetchAirtableSchema, linkedRecordIds,
-  updateAirtableRecords
+  AIRTABLE_TABLE_NAMES, WORK_FIELDS, appStatusToAirtable, airtableStatusToApp,
+  assertWorkWriteFields, fetchAirtableRecords, fetchAirtableSchema, linkedRecordIds,
+  updateAirtableRecords, workDueDate
 } from "./airtable-sync.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
@@ -493,7 +493,8 @@ async function runAirtableSync(user) {
     ["Site", ["Program Name", "Program Location"]],
     ["Steps", ["Unique", "Short Description", "Long Description", "Days"]],
     ["Users", ["Email Address", "First Name", "Last Name"]],
-    ["Work", ["Unique", "Steps", "Session", "Due Date", "Completed Date", "Status", "Assignee"]]
+    ["Work", ["Unique", "Steps", "Session", WORK_FIELDS.status, WORK_FIELDS.dueDateOverride,
+      WORK_FIELDS.completedDate, WORK_FIELDS.assignedTo]]
   ];
   for (const required of requiredFields) {
     const table = tablesByName.get(required[0]);
@@ -570,7 +571,8 @@ async function runAirtableSync(user) {
       }
       return String(value || "");
     };
-    const programs = recordMaps.get("Programs");
+    // "Programs ->" is only a divider table; use a Programs table if one exists.
+    const programs = recordMaps.get("Programs") || new Map();
     for (const record of sessions) {
       const fields = record.fields || {};
       const site = sites.get(linkedIds(fields, "Site")[0]);
@@ -629,11 +631,11 @@ async function runAirtableSync(user) {
       const shadow = getShadow.get(record.id);
       const stepFields = step.fields || {};
       const remote = {
-        status: airtableStatusToApp(fields.Status),
-        dueDate: normalizedDate(fields["Due Date"])
+        status: airtableStatusToApp(fields[WORK_FIELDS.status]),
+        dueDate: workDueDate(fields)
           || addDays(project.start_date, firstNumber(fields["Days (from Steps)"], stepFields.Days) ?? 0),
-        completedAt: normalizedDate(fields["Completed Date"]),
-        assignee: linkedIds(fields, "Assignee")[0] || null
+        completedAt: normalizedDate(fields[WORK_FIELDS.completedDate]),
+        assignee: linkedIds(fields, WORK_FIELDS.assignedTo)[0] || null
       };
       const priorRemote = shadow ? JSON.parse(shadow.remote_json) : null;
       const priorLocal = shadow ? JSON.parse(shadow.local_json) : null;
@@ -659,11 +661,13 @@ async function runAirtableSync(user) {
           if (localChanged && !remoteChanged) {
             const values = remote[field] === local[field] ? null : local[field];
             if (values !== null || (field === "completedAt" && local[field] === null)) {
+              // Due dates are written to the override field; Due Date itself is a formula.
               const airtableField = {
-                status: "Status", dueDate: "Due Date", completedAt: "Completed Date", assignee: "Assignee"
+                status: WORK_FIELDS.status, dueDate: WORK_FIELDS.dueDateOverride,
+                completedAt: WORK_FIELDS.completedDate, assignee: WORK_FIELDS.assignedTo
               }[field];
               let value = values;
-              if (field === "status") value = appStatusToAirtable(local.status, fieldChoices(workTable, "Status"));
+              if (field === "status") value = appStatusToAirtable(local.status, fieldChoices(workTable, WORK_FIELDS.status));
               if (field === "assignee") value = local.assignee ? [{ id: local.assignee }] : [];
               outbound.push({ id: record.id, fields: { [airtableField]: value } });
               remote[field] = local[field];
@@ -736,6 +740,7 @@ async function runAirtableSync(user) {
         byRecordId.set(update.id, merged);
       }
       const outboundRecords = [...byRecordId.values()];
+      assertWorkWriteFields(outboundRecords);
       await updateAirtableRecords(config, workTable.id, outboundRecords);
       outboundRecordCount = outboundRecords.length;
     }

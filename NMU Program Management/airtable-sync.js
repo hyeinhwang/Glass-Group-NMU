@@ -1,7 +1,49 @@
+// Operational tables the app needs. "Templates ->", "Programs ->" and "WIP ->" are
+// divider tables used only to group the Airtable sidebar, so they are optional.
 export const AIRTABLE_TABLE_NAMES = [
-  "Users", "Templates", "Template List", "Roles", "Steps", "Programs",
-  "Region", "Site", "Session", "Instructors", "Work", "WIP"
+  "Users", "Template List", "Roles", "Steps",
+  "Region", "Site", "Session", "Instructors", "Work"
 ];
+export const AIRTABLE_DIVIDER_TABLE_NAMES = ["Templates ->", "Programs ->", "WIP ->"];
+
+// Work fields. "Due Date", "Status" and "Assignee" are formula/lookup fields in the
+// base, so the app reads them only as fallbacks and must never write them.
+export const WORK_FIELDS = Object.freeze({
+  status: "Task Status",
+  effectiveDueDate: "Effective Due Date",
+  dueDateOverride: "Due Date Override",
+  dueDate: "Due Date",
+  assignedTo: "Assigned To",
+  completedDate: "Completed Date"
+});
+export const WORK_WRITABLE_FIELDS = Object.freeze([
+  WORK_FIELDS.status, WORK_FIELDS.dueDateOverride, WORK_FIELDS.assignedTo, WORK_FIELDS.completedDate
+]);
+export const WORK_COMPUTED_FIELDS = Object.freeze(["Due Date", "Status", "Assignee"]);
+
+const firstDate = (value) => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return null;
+  const date = String(raw).slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+};
+
+// Effective Due Date, then Due Date Override, then the formula Due Date.
+export function workDueDate(fields = {}) {
+  return firstDate(fields[WORK_FIELDS.effectiveDueDate])
+    || firstDate(fields[WORK_FIELDS.dueDateOverride])
+    || firstDate(fields[WORK_FIELDS.dueDate]);
+}
+
+export function assertWorkWriteFields(records) {
+  for (const record of records) {
+    for (const name of Object.keys(record.fields || {})) {
+      if (!WORK_WRITABLE_FIELDS.includes(name)) {
+        throw new Error(`The app may not write Work.${name}; writable fields are ${WORK_WRITABLE_FIELDS.join(", ")}.`);
+      }
+    }
+  }
+}
 
 const API_ROOT = "https://api.airtable.com/v0";
 const METADATA_ROOT = "https://api.airtable.com/v0/meta";
@@ -129,6 +171,6 @@ export function appStatusToAirtable(value, choices = []) {
   const allowed = choices.map((choice) => String(choice));
   if (!allowed.length) return value;
   const match = allowed.find((choice) => (aliases[expected] || [expected]).includes(choice.toLowerCase()));
-  if (!match) throw new Error(`Airtable Work.Status has no option matching "${value}".`);
+  if (!match) throw new Error(`Airtable Work.${WORK_FIELDS.status} has no option matching "${value}".`);
   return match;
 }

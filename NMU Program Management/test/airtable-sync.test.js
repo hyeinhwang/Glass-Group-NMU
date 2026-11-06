@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  AIRTABLE_TABLE_NAMES, appStatusToAirtable, airtableStatusToApp,
-  fetchAirtableRecords, fetchAirtableSchema, linkedRecordIds,
-  updateAirtableRecords
+  AIRTABLE_DIVIDER_TABLE_NAMES, AIRTABLE_TABLE_NAMES, appStatusToAirtable, airtableStatusToApp,
+  assertWorkWriteFields, fetchAirtableRecords, fetchAirtableSchema, linkedRecordIds,
+  updateAirtableRecords, workDueDate
 } from "../airtable-sync.js";
 
 const config = { apiKey: "test-token", baseId: "appTest", apiRoot: "http://127.0.0.1:3210/v0" };
@@ -26,7 +26,8 @@ test("discovers table metadata and linked-record targets", async () => {
     id: "fldSession", name: "Session", type: "multipleRecordLinks",
     linkedTableId: "tblSession", choices: []
   });
-  assert.equal(AIRTABLE_TABLE_NAMES.length, 12);
+  assert.equal(AIRTABLE_TABLE_NAMES.length, 9);
+  for (const divider of AIRTABLE_DIVIDER_TABLE_NAMES) assert.ok(!AIRTABLE_TABLE_NAMES.includes(divider));
 });
 
 test("paginates Airtable records using the returned offset", async () => {
@@ -69,4 +70,20 @@ test("reports missing config and Airtable permission errors explicitly", async (
     () => fetchAirtableSchema(config, async () => jsonResponse({ error: { type: "INVALID_PERMISSIONS" } }, 403)),
     /base access and schema\/record scopes/
   );
+});
+
+test("reads Effective Due Date, then Due Date Override, then Due Date", () => {
+  assert.equal(workDueDate({ "Effective Due Date": "2027-01-05", "Due Date Override": "2027-01-04", "Due Date": "2027-01-03" }), "2027-01-05");
+  assert.equal(workDueDate({ "Due Date Override": "2027-01-04", "Due Date": "2027-01-03" }), "2027-01-04");
+  assert.equal(workDueDate({ "Due Date": ["2027-01-03"] }), "2027-01-03");
+  assert.equal(workDueDate({}), null);
+});
+
+test("refuses to write formula and lookup Work fields", () => {
+  assert.doesNotThrow(() => assertWorkWriteFields([{ id: "rec1", fields: {
+    "Task Status": "Done", "Due Date Override": "2027-01-01", "Assigned To": [{ id: "recU" }], "Completed Date": null
+  } }]));
+  for (const name of ["Due Date", "Status", "Assignee", "Notes"]) {
+    assert.throws(() => assertWorkWriteFields([{ id: "rec1", fields: { [name]: "x" } }]), /may not write Work/);
+  }
 });

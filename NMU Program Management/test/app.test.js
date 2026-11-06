@@ -365,26 +365,31 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
   await t.test("syncs linked Airtable tables and writes only approved Work fields", async () => {
     const adminEmail = "airtable-admin@nmu.test";
     const adminPassword = "airtable-admin-password-2026";
-    const tableNames = ["Users", "Templates", "Template List", "Roles", "Steps", "Programs", "Region", "Site", "Session", "Instructors", "Work", "WIP", "Activity Log", "Comments", "Notifications"];
+    const tableNames = ["Users", "Templates ->", "Template List", "Roles", "Steps", "Programs ->", "Region", "Site", "Session", "Instructors", "Work", "WIP ->", "Activity Log", "Comments", "Notifications"];
     const tableIds = new Map(tableNames.map((name, index) => [name, `tbl${index + 1}`]));
     const link = (name, target) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "multipleRecordLinks", options: { linkedTableId: tableIds.get(target) } });
     const text = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "singleLineText", options: {} });
     const dateField = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "date", options: {} });
     const numberField = (name) => ({ id: `fld${name.replaceAll(" ", "")}`, name, type: "number", options: {} });
     const statusField = { id: "fldStatus", name: "Status", type: "singleSelect", options: { choices: ["Not Started", "In Progress", "Done"].map((name) => ({ name })) } };
+    const computed = (name, type = "formula") => ({ id: `fld${name.replaceAll(" ", "")}`, name, type, options: {} });
+    const taskStatusField = { id: "fldTaskStatus", name: "Task Status", type: "singleSelect", options: { choices: ["Not Started", "In Progress", "Done"].map((name) => ({ name })) } };
     const schemaFields = new Map([
       ["Users", [text("Email Address"), text("First Name"), text("Last Name"), link("Roles", "Roles")]],
-      ["Templates", [text("Name")]],
+      ["Templates ->", [text("Name")]],
       ["Template List", [text("List Name (Unique)"), dateField("Created"), statusField, link("Steps", "Steps")]],
-      ["Roles", [text("Role Name"), statusField, link("Users", "Users"), link("Steps", "Steps"), link("Templates", "Templates")]],
-      ["Steps", [text("Unique"), text("Short Description"), text("Long Description"), link("Dependancies", "Steps"), numberField("Days"), link("Template", "Templates"), link("Roles", "Roles")]],
-      ["Programs", [text("Name")]],
+      ["Roles", [text("Role Name"), statusField, link("Users", "Users"), link("Steps", "Steps")]],
+      ["Steps", [text("Unique"), text("Short Description"), text("Long Description"), link("Dependancies", "Steps"), numberField("Days"), link("Template", "Template List"), link("Roles", "Roles")]],
+      ["Programs ->", [text("Name")]],
       ["Region", [text("Name"), link("Site", "Site")]],
       ["Site", [text("Program Name"), link("Region", "Region"), link("Session", "Session"), text("Region Site"), text("Program Location"), link("Instructors", "Instructors"), link("Work", "Work")]],
       ["Session", [text("Session Name"), dateField("Start Date"), numberField("Duration (Days)"), dateField("End Date"), link("Site", "Site"), text("Region Site Session"), statusField, numberField("Program Hours"), link("Instructors", "Instructors"), link("Work", "Work")]],
       ["Instructors", [text("Instructor Name"), link("Site", "Site"), text("Email"), link("Session", "Session")]],
-      ["Work", [text("Unique"), text("Notes"), link("Steps", "Steps"), link("Session", "Session"), numberField("Days (from Steps)"), dateField("Start Date (from Session)"), dateField("Due Date"), dateField("Completed Date"), statusField, link("Assignee", "Users")]],
-      ["WIP", [text("Name")]],
+      ["Work", [text("Unique"), text("Notes"), link("Steps", "Steps"), link("Session", "Session"),
+        computed("Days (from Steps)", "multipleLookupValues"), computed("Start Date (from Session)", "multipleLookupValues"),
+        computed("Due Date"), dateField("Due Date Override"), computed("Effective Due Date"), dateField("Completed Date"),
+        computed("Status", "multipleLookupValues"), taskStatusField, computed("Assignee", "multipleLookupValues"), link("Assigned To", "Users")]],
+      ["WIP ->", [text("Name")]],
       ["Activity Log", [text("Name"), text("Action")]],
       ["Comments", [text("Name"), text("Comment")]],
       ["Notifications", [text("Name"), text("Message")]]
@@ -405,8 +410,10 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     } }]);
     airtableRows.set("Work", [{ id: "recWork", fields: {
       Unique: "winter-host", Steps: [{ id: "recStep" }], Session: [{ id: "recSession" }],
-      "Days (from Steps)": -5, "Due Date": "2026-12-27", "Completed Date": null,
-      Status: "Not Started", Assignee: [{ id: "recAdmin" }]
+      "Days (from Steps)": [-5], "Due Date": "2026-12-27", "Due Date Override": "2026-12-20",
+      "Effective Due Date": "2026-12-20", "Completed Date": null,
+      Status: ["stale lookup"], "Task Status": "Not Started", Assignee: ["stale lookup"],
+      "Assigned To": [{ id: "recAdmin" }]
     } }]);
     const patchCalls = [];
     const mockAirtable = createHttpServer(async (request, response) => {
@@ -431,6 +438,10 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
         let body = "";
         for await (const chunk of request) body += chunk;
         const updates = JSON.parse(body).records;
+        const computedNames = new Set(schemaFields.get("Work")
+          .filter((field) => ["formula", "multipleLookupValues"].includes(field.type)).map((field) => field.name));
+        const invalid = updates.flatMap((update) => Object.keys(update.fields)).filter((name) => computedNames.has(name));
+        if (invalid.length) return json(422, { error: { type: "INVALID_VALUE_FOR_COLUMN", message: `Cannot write ${invalid.join(", ")}` } });
         patchCalls.push(...updates);
         for (const update of updates) {
           const record = airtableRows.get("Work").find((item) => item.id === update.id);
@@ -534,6 +545,7 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       assert.equal(bootstrap.body.projects[0].location, "Everett, WA");
       assert.equal(bootstrap.body.tasks[0].title, "Confirm the host.");
       assert.equal(bootstrap.body.tasks[0].assigneeName, "Initial Admin");
+      assert.equal(bootstrap.body.tasks[0].dueDate, "2026-12-20", "Effective Due Date is preferred over Due Date");
 
       const taskId = bootstrap.body.tasks[0].id;
       const localUpdate = await authRequest(`/api/tasks/${taskId}/status`, {
@@ -543,16 +555,37 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       const outboundSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
       assert.equal(outboundSync.status, 200);
       assert.equal(outboundSync.body.updatedWorkRecords, 1);
-      assert.deepEqual(Object.keys(patchCalls[0].fields).sort(), ["Completed Date", "Status"]);
-      assert.equal(patchCalls[0].fields.Status, "Done");
+      assert.deepEqual(Object.keys(patchCalls[0].fields).sort(), ["Completed Date", "Task Status"]);
+      assert.equal(patchCalls[0].fields["Task Status"], "Done");
       assert.ok(patchCalls[0].fields["Completed Date"]);
-      assert.equal(airtableRows.get("Work")[0].fields.Status, "Done");
+      assert.equal(airtableRows.get("Work")[0].fields["Task Status"], "Done");
+
+      const override = await authRequest(`/api/tasks/${taskId}/due-date`, {
+        method: "PATCH", cookie, body: { dueDate: "2026-12-24" }
+      });
+      assert.equal(override.status, 200);
+      const reassign = await authRequest(`/api/tasks/${taskId}/assignee`, {
+        method: "PATCH", cookie, body: { assignedUserId: addEmployee.body.user.id }
+      });
+      assert.equal(reassign.status, 200);
+      airtableRows.get("Users").push({ id: "recViewer", fields: { "Email Address": "table-viewer@nmu.test", "First Name": "Table", "Last Name": "Viewer" } });
+      const fieldSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
+      assert.equal(fieldSync.status, 200, JSON.stringify(fieldSync.body));
+      const lastPatch = patchCalls.at(-1).fields;
+      assert.deepEqual(Object.keys(lastPatch).sort(), ["Assigned To", "Due Date Override"]);
+      assert.equal(lastPatch["Due Date Override"], "2026-12-24");
+      assert.deepEqual(lastPatch["Assigned To"], [{ id: "recViewer" }]);
+      for (const call of patchCalls) {
+        for (const name of Object.keys(call.fields)) {
+          assert.ok(["Task Status", "Due Date Override", "Assigned To", "Completed Date"].includes(name), `wrote ${name}`);
+        }
+      }
 
       const localConflict = await authRequest(`/api/tasks/${taskId}/status`, {
         method: "PATCH", cookie, body: { status: "Not Started" }
       });
       assert.equal(localConflict.status, 200);
-      airtableRows.get("Work")[0].fields.Status = "In Progress";
+      airtableRows.get("Work")[0].fields["Task Status"] = "In Progress";
       airtableRows.get("Work")[0].fields["Completed Date"] = null;
       const conflictSync = await authRequest("/api/integrations/airtable/sync", { method: "POST", cookie, body: {} });
       assert.equal(conflictSync.status, 200);
