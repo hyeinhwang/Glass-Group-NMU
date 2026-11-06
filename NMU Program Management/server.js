@@ -1172,63 +1172,6 @@ async function handleApi(request, response, url) {
       return send(response, error.status === 401 || error.status === 403 ? 502 : error.status || 503, { error: error.message });
     }
   }
-  if (request.method === "POST" && path === "/api/integrations/airtable/import") {
-    if (!["admin", "program_manager"].includes(user.role)) return send(response, 403, { error: "Only management can import Airtable programs." });
-    const { AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_PROJECTS_TABLE, AIRTABLE_FIELD_MAPPING } = process.env;
-    if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) return send(response, 503, { error: "Airtable is not configured. Add your Personal Access Token and base ID to .env, restart, and try again." });
-    let mapping;
-    try { mapping = JSON.parse(AIRTABLE_FIELD_MAPPING || "{}"); } catch { return send(response, 500, { error: "AIRTABLE_FIELD_MAPPING must contain valid JSON." }); }
-    if (!AIRTABLE_PROJECTS_TABLE) return send(response, 503, { error: "Set AIRTABLE_PROJECTS_TABLE in .env to the table name or ID." });
-    const table = encodeURIComponent(AIRTABLE_PROJECTS_TABLE);
-    let endpoint = `https://api.airtable.com/v0/${encodeURIComponent(AIRTABLE_BASE_ID)}/${table}`;
-    const records = [];
-    try {
-      do {
-        const result = await fetch(endpoint, { headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` } });
-        if (!result.ok) {
-          const issue = await result.json().catch(() => ({}));
-          return send(response, result.status === 401 || result.status === 403 ? 502 : 502, {
-            error: `Airtable import failed (${result.status}): ${issue.error?.message || issue.error?.type || "check the token, base, table, and field mapping."}`
-          });
-        }
-        const page = await result.json();
-        records.push(...page.records);
-        endpoint = page.offset ? `https://api.airtable.com/v0/${encodeURIComponent(AIRTABLE_BASE_ID)}/${table}?offset=${encodeURIComponent(page.offset)}` : "";
-      } while (endpoint);
-    } catch (error) {
-      return send(response, 502, { error: `Could not connect to Airtable: ${error.message}` });
-    }
-    const getField = (fields, name, fallback = "") => {
-      const key = mapping[name];
-      return key ? fields[key] ?? fallback : fallback;
-    };
-    let imported = 0;
-    let skipped = 0;
-    const upsert = database.prepare(`INSERT INTO projects
-      (id,name,description,program_type,location,host_organization,start_date,end_date,status,project_manager_id,airtable_record_id,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-      ON CONFLICT(airtable_record_id) DO UPDATE SET name=excluded.name,description=excluded.description,
-      program_type=excluded.program_type,location=excluded.location,host_organization=excluded.host_organization,
-      start_date=excluded.start_date,end_date=excluded.end_date,status=excluded.status,updated_at=excluded.updated_at`);
-    for (const record of records) {
-      const fields = record.fields || {};
-      const name = getField(fields, "name");
-      const location = getField(fields, "location");
-      const startDate = getField(fields, "startDate");
-      const endDate = getField(fields, "endDate", startDate);
-      if (!name || !location || !validateDate(startDate) || !validateDate(endDate)) {
-        skipped++;
-        continue;
-      }
-      const existing = database.prepare("SELECT id FROM projects WHERE airtable_record_id=?").get(record.id);
-      upsert.run(existing?.id || randomUUID(), String(name), String(getField(fields, "description")),
-        String(getField(fields, "programType", "Community")), String(location),
-        String(getField(fields, "hostOrganization")), startDate, endDate,
-        startDate > offsetDate(30) ? "Planning" : "On Track", user.id, record.id, nowISO(), nowISO());
-      if (!existing) imported++;
-    }
-    return send(response, 200, { imported, updated: records.length - imported - skipped, skipped, total: records.length });
-  }
   return send(response, 404, { error: "API route not found." });
 }
 

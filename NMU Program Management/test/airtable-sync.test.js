@@ -38,7 +38,7 @@ test("paginates Airtable records using the returned offset", async () => {
     return jsonResponse({ records: [{ id: "rec2" }] });
   });
   assert.deepEqual(records.map((record) => record.id), ["rec1", "rec2"]);
-  assert.match(calls[0], /tbl%20Work$/);
+  assert.match(calls[0], /tbl%20Work\?/);
   assert.match(calls[1], /offset=next\+page$/);
 });
 

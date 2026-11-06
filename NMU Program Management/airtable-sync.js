@@ -1,3 +1,5 @@
+import { createAirtableClient } from "./airtable-client.js";
+
 // Operational tables the app needs. "Templates ->", "Programs ->" and "WIP ->" are
 // divider tables used only to group the Airtable sidebar, so they are optional.
 export const AIRTABLE_TABLE_NAMES = [
@@ -45,105 +47,19 @@ export function assertWorkWriteFields(records) {
   }
 }
 
-const API_ROOT = "https://api.airtable.com/v0";
-const METADATA_ROOT = "https://api.airtable.com/v0/meta";
-
-function configError(config) {
-  if (!config.apiKey || !config.baseId) {
-    return new Error("Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID in the service environment.");
-  }
-  return null;
-}
-
-function endpointRoot(config) {
-  const override = config.apiRoot || API_ROOT;
-  const url = new URL(override);
-  if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname)) {
-    throw new Error("AIRTABLE_API_ROOT must use HTTPS.");
-  }
-  return url.toString().replace(/\/$/, "");
-}
-
-async function requestJson(url, config, fetcher, options = {}) {
-  const response = await fetcher(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      ...(options.body ? { "content-type": "application/json" } : {}),
-      ...(options.headers || {})
-    },
-    signal: AbortSignal.timeout(30_000)
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = response.status === 401
-      ? "Airtable rejected the token. Check AIRTABLE_API_KEY."
-      : response.status === 403
-        ? "Airtable denied access. Check this token's base access and schema/record scopes."
-        : body.error?.message || body.error?.type || `Airtable returned HTTP ${response.status}.`;
-    const error = new Error(message);
-    error.status = response.status;
-    throw error;
-  }
-  return body;
-}
+// All HTTP calls go through airtable-client.js (batching, throttling, 429 retry).
+const clientFor = (config, fetcher) => createAirtableClient({ ...config, fetch: fetcher });
 
 export async function fetchAirtableSchema(config, fetcher = fetch) {
-  const missingConfig = configError(config);
-  if (missingConfig) throw missingConfig;
-  const root = endpointRoot(config);
-  const result = await requestJson(
-    `${root.replace(/\/v0$/, "")}/v0/meta/bases/${encodeURIComponent(config.baseId)}/tables`,
-    config,
-    fetcher
-  );
-  return (result.tables || []).map((table) => ({
-    id: table.id,
-    name: table.name,
-    fields: (table.fields || []).map((field) => ({
-      id: field.id,
-      name: field.name,
-      type: field.type,
-      linkedTableId: field.options?.linkedTableId || null,
-      choices: field.options?.choices?.map((choice) => choice.name) || []
-    }))
-  }));
+  return clientFor(config, fetcher).getSchema();
 }
 
 export async function fetchAirtableRecords(config, tableId, fetcher = fetch) {
-  const missingConfig = configError(config);
-  if (missingConfig) throw missingConfig;
-  const root = endpointRoot(config);
-  const records = [];
-  let offset = "";
-  do {
-    const url = new URL(`${root}/${encodeURIComponent(config.baseId)}/${encodeURIComponent(tableId)}`);
-    if (offset) url.searchParams.set("offset", offset);
-    const page = await requestJson(url, config, fetcher);
-    records.push(...(page.records || []));
-    offset = page.offset || "";
-  } while (offset);
-  return records;
+  return clientFor(config, fetcher).listRecords(tableId);
 }
 
 export async function updateAirtableRecords(config, tableId, records, fetcher = fetch) {
-  const missingConfig = configError(config);
-  if (missingConfig) throw missingConfig;
-  const root = endpointRoot(config);
-  const updated = [];
-  for (let index = 0; index < records.length; index += 10) {
-    const result = await requestJson(
-      `${root}/${encodeURIComponent(config.baseId)}/${encodeURIComponent(tableId)}`,
-      config,
-      fetcher,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ records: records.slice(index, index + 10) })
-      }
-    );
-    updated.push(...(result.records || []));
-  }
-  return updated;
+  return clientFor(config, fetcher).updateRecords(tableId, records);
 }
 
 export function linkedRecordIds(value) {
