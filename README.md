@@ -18,23 +18,19 @@ From the repository root, `npm start` starts the app and `npm test` runs its wor
 
 ## Airtable
 
-The app validates the 12 NMU operational tables, syncs every table in the connected base, and provides an administrator-only browser for read-only Airtable record snapshots. Airtable owns reference/setup data; the app writes only the approved task status/date/assignee fields back to linked `Work` records. Airtable permissions, sync behavior, and conflict handling are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code.
+Airtable is the system of record: the app reads and writes programs (Sessions), tasks (Work), comments, activity history, and notifications directly in the connected base and has no database of its own. Sign-in is Google-only for the NMU domain, and roles come from the Airtable `Users.Rights` field (Admin, Manager, Contributor); no passwords are stored. On `Work`, the app writes only `Task Status`, `Due Date Override`, `Assigned To`, and `Completed Date`. Configuration, field mapping and permissions are documented in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code or chat.
 
 ## Team handoff and current status
 
 - **Repository:** [Glass-Group-NMU](https://github.com/jokingkingsley/Glass-Group-NMU)
 - **Production URL:** https://glass-group-nmu-production.up.railway.app
-- **Current code:** `main` includes commit `d5f3063` (`Add linked Airtable table synchronization`), which adds the 12-table Airtable sync and the administrator settings UI. Production authentication is in the preceding commit `ccc8511`.
+- **Current code:** the `airtable-field-alignment` branch replaces SQLite and the manual sync with direct Airtable reads/writes and Google sign-in. `main` still has the earlier SQLite + manual sync version until that branch is reviewed and merged.
 
-### Known deployment issue
+### Deployment configuration
 
-The GitHub `main` branch has the new multi-table sync, but the live Railway URL was still serving the old one-table Airtable importer when checked on 2026-11-04. That old screen asks for `AIRTABLE_PROJECTS_TABLE` and `AIRTABLE_FIELD_MAPPING`. Those variables are **not required by the new multi-table sync**; `AIRTABLE_PROJECTS_TABLE` identifies only one table and will not connect all 12 tables.
+Set these Railway Variables before deploying the `airtable-field-alignment` changes: `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `NMU_ALLOWED_EMAIL_DOMAIN`, `NMU_PUBLIC_URL`, `NMU_SESSION_SECRET` (32+ random characters), and `NODE_ENV=production`. In Google Cloud, add `$NMU_PUBLIC_URL/auth/google/callback` as an authorized redirect URI. The old `NMU_ADMIN_EMAIL`/`NMU_ADMIN_PASSWORD`, `NMU_DATABASE_PATH`, `AIRTABLE_PROJECTS_TABLE`, and `AIRTABLE_FIELD_MAPPING` variables are no longer used, and no persistent volume is needed.
 
-The currently checked-in UI should instead show **Settings → Airtable integration**, **Check schema access**, and **Sync all Airtable tables**. To get that version into production, confirm the Railway service is connected to this repository and the `main` branch, leave **Root Directory empty** (repository root), and deploy the latest commit. Verify the active deployment commit is `d5f3063` or newer. Then hard-refresh the browser. If the deployment still serves the old screen, inspect Railway's service/repository/branch settings and build/deploy logs; do not work around the mismatch by adding one-table variables.
-
-Live Airtable access has **not** been confirmed. The local credential previously tested returned an Airtable `401 Invalid authentication token`; the Railway token cannot be inspected from this repository. Before syncing real records, configure `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` in Railway Variables, deploy, and use **Check schema access**. The token must have `schema.bases:read`, `data.records:read`, and `data.records:write` access to the intended base. Never paste the token into chat or commit it. The Airtable sync is manual, and a persistent Railway volume must be mounted with `NMU_DATABASE_PATH` pointing to it before the first sync.
-
-Authentication is implemented. In production, set `NMU_AUTH_MODE=required`, `NMU_ADMIN_EMAIL`, and a private `NMU_ADMIN_PASSWORD` of at least 12 characters in Railway Variables. Optionally set `NMU_ADMIN_NAME`. The initial administrator is created on first database startup and can add individual teammate accounts in Settings. Changing the environment password does not reset an existing account; use the in-app password-change flow.
+The Airtable token must have `schema.bases:read`, `data.records:read`, and `data.records:write` access to the NMU base. After deploying, sign in as an Admin and use **Settings → Check schema access** to confirm every required table and field exists. Live Airtable access has not yet been verified against the real base.
 
 ### Clone and work safely on a feature branch
 
@@ -74,6 +70,6 @@ Open a GitHub pull request from your feature branch into `main`. Review the diff
 
 ### Known scope and safeguards
 
-The sync discovers the 12 Airtable tables from the base; Airtable owns reference/setup data. Only `Status`, `Due Date`, `Completed Date`, and `Assignee` on already-linked `Work` records can be written back. App-only tasks do not create new Airtable Work rows, and neither side automatically deletes records. SQLite is single-instance; review the app README before importing real operational data or scaling. All seeded program records and people are demonstration data, not verified NMU records. Local demo identity switching is not used when authentication is required.
+Airtable owns all data; the app never deletes Airtable records. Formula/lookup fields (`Due Date`, `Status`, `Assignee`) are never written. Templates and Steps are edited in Airtable, not in the app. Activity Log and Notifications writes are best-effort: if they fail, the primary change is kept and the error is logged.
 
 The `Week 1/`, `Week 3/`, and `Week 6/` folders present in the original developer's working copy are untracked local files, not part of this application or repository; do not add them to a commit unless their owner explicitly requests it.
