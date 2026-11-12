@@ -100,6 +100,70 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     assert.equal(createdTasks[0].dueDate, plusDays(130));
     assert.ok(createdTasks.some((task) => task.dependencies.length > 0));
     assert.equal(project.body.project.details.primaryContact, "Morgan Lee");
+    assert.equal(result.body.taskCount, project.body.tasks.length);
+  });
+
+  await t.test("creates a program from scratch without template tasks", async () => {
+    const programDate = plusDays(310);
+    const result = await request("/api/projects", "u-jordan", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Swim Safely Series – Bellevue Bellevue YMCA",
+        programType: "Swim Safely Series",
+        deliveryType: "Community",
+        city: "Bellevue",
+        state: "WA",
+        location: "Bellevue, WA",
+        hostOrganization: "Bellevue YMCA",
+        startDate: programDate,
+        projectManagerId: "u-jordan",
+        creationMode: "scratch",
+        programHours: 24,
+        leadInstructors: "Alex Rivera, Sam Okafor"
+      })
+    });
+    assert.equal(result.status, 201);
+    assert.equal(result.body.taskCount, 0);
+    const project = await request(`/api/projects/${result.body.projectId}`, "u-jordan");
+    assert.equal(project.status, 200);
+    assert.equal(project.body.project.endDate, programDate);
+    assert.equal(project.body.project.city, "Bellevue");
+    assert.equal(project.body.project.state, "WA");
+    assert.equal(project.body.project.deliveryType, "Community");
+    assert.equal(project.body.project.details.programHours, 24);
+    assert.equal(project.body.project.details.leadInstructors, "Alex Rivera, Sam Okafor");
+    assert.equal(project.body.tasks.length, 0);
+    const firstTask = await request(`/api/projects/${result.body.projectId}/tasks`, "u-jordan", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Confirm instructor availability", description: "Contact the selected instructors.",
+        dueDate: programDate, milestone: "Staffing", priority: "High", assignedUserId: "u-casey"
+      })
+    });
+    assert.equal(firstTask.status, 201);
+    const followupTask = await request(`/api/projects/${result.body.projectId}/tasks`, "u-jordan", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Prepare instructor schedule", dueDate: programDate, milestone: "Staffing",
+        priority: "Medium", dependencyIds: [firstTask.body.taskId]
+      })
+    });
+    assert.equal(followupTask.status, 201);
+    const populatedProject = await request(`/api/projects/${result.body.projectId}`, "u-jordan");
+    assert.equal(populatedProject.body.tasks.length, 2);
+    assert.equal(populatedProject.body.tasks.find((task) => task.id === firstTask.body.taskId).assigneeName, "Casey Nguyen");
+    assert.equal(populatedProject.body.tasks.find((task) => task.id === followupTask.body.taskId).isBlocked, true);
+    assert.ok(populatedProject.body.members.some((member) => member.id === "u-casey"));
+    const foreignDependency = await request(`/api/projects/${result.body.projectId}/tasks`, "u-jordan", {
+      method: "POST",
+      body: JSON.stringify({ title: "Invalid dependency", dueDate: programDate, dependencyIds: [createdTasks[0].id] })
+    });
+    assert.equal(foreignDependency.status, 400);
+    const unauthorizedCreate = await request(`/api/projects/${result.body.projectId}/tasks`, "u-mary", {
+      method: "POST",
+      body: JSON.stringify({ title: "Unauthorized task", dueDate: programDate })
+    });
+    assert.equal(unauthorizedCreate.status, 404);
   });
 
   await t.test("reassigns tasks, notifies the new owner, and records notes", async () => {
@@ -202,6 +266,16 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     assert.equal(partnerProject.body.members.length, 1);
     assert.equal(partnerProject.body.tasks.length, 1);
     assert.deepEqual(partnerProject.body.project.details, {});
+    const programManagerBootstrap = await request("/api/bootstrap", "u-jordan");
+    assert.equal(programManagerBootstrap.body.projects.length, 8);
+    assert.ok(programManagerBootstrap.body.projects.some((project) => project.id === "p-portland"));
+    const organizationProject = await request("/api/projects/p-portland", "u-jordan");
+    assert.equal(organizationProject.status, 200);
+    assert.ok(organizationProject.body.tasks.every((task) => task.canEdit === false));
+    const forbiddenUpdate = await request(`/api/tasks/${organizationProject.body.tasks[0].id}/status`, "u-jordan", {
+      method: "PATCH", body: JSON.stringify({ status: "In Progress" })
+    });
+    assert.equal(forbiddenUpdate.status, 404);
   });
 
   await t.test("allows administrators to change reusable template tasks", async () => {
@@ -218,7 +292,13 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     const afterSave = await request("/api/templates/tpl-clinic", "u-catalina");
     assert.equal(afterSave.body.name, changed.name);
     assert.equal(afterSave.body.tasks[0].title, changed.tasks[0].title);
-    const unauthorized = await request("/api/templates/tpl-clinic", "u-jordan", {
+    const programManagerCanRead = await request("/api/templates/tpl-clinic", "u-jordan");
+    assert.equal(programManagerCanRead.status, 200);
+    const programManagerCanEdit = await request("/api/templates/tpl-clinic", "u-jordan", {
+      method: "PATCH", body: JSON.stringify({ name: changed.name, description: changed.description, tasks: changed.tasks })
+    });
+    assert.equal(programManagerCanEdit.status, 200);
+    const unauthorized = await request("/api/templates/tpl-clinic", "u-mary", {
       method: "PATCH", body: JSON.stringify({ name: changed.name, description: changed.description, tasks: changed.tasks })
     });
     assert.equal(unauthorized.status, 403);
@@ -301,6 +381,22 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       });
       assert.equal(created.status, 201);
       assert.ok(!JSON.stringify(created.body).includes("password_hash"));
+      const productionProgram = await authRequest("/api/projects", {
+        method: "POST", cookie: adminCookie,
+        body: {
+          name: "Authenticated template program", programType: "Learn to Swim",
+          city: "Bellevue", state: "WA", location: "Bellevue, WA",
+          hostOrganization: "Bellevue YMCA", deliveryType: "Community",
+          startDate: "2030-06-01", endDate: "2030-06-01", templateId: "tpl-community",
+          projectManagerId: bootstrap.body.currentUser.id, creationMode: "template",
+          programHours: 18, leadInstructors: "Alex Rivera"
+        }
+      });
+      assert.equal(productionProgram.status, 201, JSON.stringify(productionProgram.body));
+      assert.equal(productionProgram.body.taskCount, 16);
+      const productionDetail = await authRequest(`/api/projects/${productionProgram.body.projectId}`, { cookie: adminCookie });
+      assert.equal(productionDetail.status, 200);
+      assert.ok(productionDetail.body.tasks.every((task) => task.assigneeName));
       const accountList = await authRequest("/api/users", { cookie: adminCookie });
       assert.equal(accountList.status, 200);
       assert.equal(accountList.body.users.find((item) => item.email === "member@nmu.test").active, true);

@@ -97,6 +97,13 @@ h1 { margin-bottom: 7px; color: #193d40; font: 700 27px/1.2 "Manrope", sans-seri
 .search-input,.filter-select { height: 32px; border: 1px solid #e2eae6; border-radius: 5px; background: #fff; color: #526e69; font-size: 10px; }
 .search-input { width: min(190px,32vw); padding: 0 10px; }
 .filter-select { padding: 0 9px; }
+.project-filters { padding: 0 15px 11px; border-bottom: 1px solid #eff3f0; }
+.project-filters summary { padding: 9px 0; color: #64817b; font-size: 10px; font-weight: 700; cursor: pointer; }
+.project-filter-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(125px,1fr)); gap: 9px; align-items: end; padding-top: 5px; }
+.compact-filter { display: grid; gap: 5px; color: #82928d; font-size: 9px; font-weight: 600; }
+.compact-filter select,.compact-filter input { min-width: 0; height: 32px; padding: 0 8px; border: 1px solid #e2eae6; border-radius: 5px; background: #fff; color: #526e69; font-size: 10px; }
+.filter-clear { align-self: end; }
+.task-toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .project-table,.task-table { width: 100%; border-collapse: collapse; text-align: left; }
 .project-table th,.task-table th { padding: 11px 15px; border-bottom: 1px solid #edf1ee; color: #8a9b97; font-size: 9px; font-weight: 700; letter-spacing: .45px; text-transform: uppercase; white-space: nowrap; }
 .project-table td,.task-table td { padding: 12px 15px; border-bottom: 1px solid #eff3f0; color: #526d68; font-size: 10px; vertical-align: middle; }
@@ -229,6 +236,10 @@ h1 { margin-bottom: 7px; color: #193d40; font: 700 27px/1.2 "Manrope", sans-seri
 .form-field label { color: #617973; font-size: 10px; font-weight: 700; }
 .form-field input,.form-field select,.form-field textarea { width: 100%; min-height: 35px; padding: 8px 9px; border: 1px solid #dfe8e3; border-radius: 5px; background: white; color: #355652; font-size: 10px; }
 .form-field textarea { min-height: 70px; resize: vertical; }
+fieldset.form-field { min-width: 0; margin: 0; padding: 9px; border: 1px solid #dfe8e3; border-radius: 5px; }
+.form-field legend { padding: 0 4px; color: #617973; font-size: 10px; font-weight: 700; }
+.checkbox-option { display: flex; align-items: flex-start; gap: 7px; padding: 5px 0; color: #355652; font-size: 10px; }
+.checkbox-option input { width: auto; min-height: 0; margin: 1px 0 0; padding: 0; border: 0; background: transparent; }
 .form-hint { color: #99a6a1; font-size: 9px; }
 .preview-box { max-height: 180px; overflow: auto; margin-top: 15px; padding: 11px; border: 1px solid #e6ece8; border-radius: 6px; background: #fafcfb; }
 .preview-box h3 { margin: 0 0 8px; color: #4b6962; font-size: 10px; }
