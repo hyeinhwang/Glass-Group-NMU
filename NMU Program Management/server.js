@@ -341,6 +341,7 @@ function verifySameOrigin(request) {
   }
 }
 const canManage = (user) => user.role === "admin";
+const canManageTemplates = (user) => canManage(user) || user.role === "program_manager";
 const isMember = (projectId, userId) => Boolean(database.prepare("SELECT 1 FROM project_members WHERE project_id=? AND user_id=?").get(projectId, userId));
 function canAccessProject(user, projectId) {
   if (canManage(user)) return true;
@@ -351,6 +352,9 @@ function canAccessProject(user, projectId) {
   return isMember(projectId, user.id) || Boolean(database.prepare(
     "SELECT 1 FROM tasks WHERE project_id=? AND assigned_user_id=?"
   ).get(projectId, user.id));
+}
+function canViewProject(user, projectId) {
+  return user.role === "program_manager" || canAccessProject(user, projectId);
 }
 function canEditTask(user, task) {
   return canManage(user) || (user.role === "program_manager" && canAccessProject(user, task.project_id))
@@ -365,10 +369,9 @@ function notifyUser(userId, projectId, message) {
     .run(randomUUID(), userId, projectId, message, nowISO());
 }
 const projectRows = (user) => {
-  const where = canManage(user) ? "" : user.role === "program_manager"
-    ? "WHERE p.project_manager_id=? OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?)"
+  const where = canManage(user) || user.role === "program_manager" ? ""
     : "WHERE EXISTS(SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?) OR EXISTS(SELECT 1 FROM tasks t WHERE t.project_id=p.id AND t.assigned_user_id=?)";
-  const params = canManage(user) ? [] : user.role === "program_manager" ? [user.id, user.id] : [user.id, user.id];
+  const params = canManage(user) || user.role === "program_manager" ? [] : [user.id, user.id];
   return database.prepare(`SELECT p.*,u.name AS manager_name,
     (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) AS task_count,
     (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.status='Completed') AS completed_count
@@ -390,13 +393,17 @@ function taskResponse(row, viewer) {
   };
 }
 function projectResponse(row) {
+  const details = JSON.parse(row.details_json || "{}");
+  const [city, ...stateParts] = String(row.location || "").split(",");
   return {
     id: row.id, name: row.name, description: row.description, programType: row.program_type,
     location: row.location, hostOrganization: row.host_organization, startDate: row.start_date,
+    city: details.city || city.trim(), state: details.state || stateParts.join(",").trim(),
+    deliveryType: details.deliveryType || "",
     endDate: row.end_date, status: row.status, projectManagerId: row.project_manager_id,
     projectManagerName: row.manager_name, progress: Number(row.task_count) ? Math.round(row.completed_count / row.task_count * 100) : 0,
     taskCount: Number(row.task_count), completedCount: Number(row.completed_count),
-    details: JSON.parse(row.details_json || "{}")
+    details
   };
 }
 function send(response, status, body, contentType = "application/json; charset=utf-8") {
@@ -431,8 +438,10 @@ function validateDate(value) {
 }
 function resolveRoleAssignment(role, managerId) {
   if (role === "program_manager") return managerId;
-  if (role === "admin") return "u-catalina";
-  if (role === "employee") return "u-casey";
+  if (role === "admin" || role === "employee") {
+    const assignee = database.prepare("SELECT id FROM users WHERE role=? AND is_active=1 ORDER BY name LIMIT 1").get(role);
+    if (assignee) return assignee.id;
+  }
   return managerId;
 }
 
@@ -876,11 +885,18 @@ async function handleApi(request, response, url) {
       .map((task) => ({ ...taskResponse(task, user), projectName: project.name, projectStatus: project.status })));
     const notifications = database.prepare("SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 20").all(user.id)
       .map((item) => ({ id: item.id, message: item.message, isRead: Boolean(item.is_read), createdAt: item.created_at, projectId: item.project_id }));
+    const templates = database.prepare("SELECT id,name,program_type AS programType,description FROM templates ORDER BY name").all()
+      .map((template) => ({
+        ...template,
+        tasks: database.prepare(`SELECT id,title,description,relative_due_days AS relativeDueDays,priority,milestone,
+          default_role AS defaultRole,dependency_index AS dependencyIndex
+          FROM template_tasks WHERE template_id=? ORDER BY rowid`).all(template.id)
+      }));
     return send(response, 200, {
       currentUser: { ...user, roleLabel: roleLabel[user.role] },
       users: database.prepare("SELECT id,name,role FROM users WHERE is_active=1 ORDER BY name").all(),
       projects, tasks, notifications,
-      templates: database.prepare("SELECT id,name,program_type AS programType,description FROM templates ORDER BY name").all(),
+      templates,
       integration: {
         airtableConfigured: Boolean(process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID),
         airtableTablesSynced: database.prepare("SELECT COUNT(*) AS count FROM airtable_tables").get().count,
@@ -893,7 +909,7 @@ async function handleApi(request, response, url) {
     return send(response, 200, projectRows(user).map(projectResponse));
   }
   if (request.method === "GET" && path.startsWith("/api/templates/")) {
-    if (!canManage(user)) return send(response, 403, { error: "Only administrators can edit program templates." });
+    if (!canManageTemplates(user)) return send(response, 403, { error: "Only administrators and program managers can edit program templates." });
     const templateId = decodeURIComponent(path.slice("/api/templates/".length));
     const template = database.prepare("SELECT id,name,program_type AS programType,description FROM templates WHERE id=?").get(templateId);
     if (!template) return send(response, 404, { error: "Template not found." });
@@ -902,7 +918,7 @@ async function handleApi(request, response, url) {
     return send(response, 200, { ...template, tasks });
   }
   if (request.method === "PATCH" && path.startsWith("/api/templates/")) {
-    if (!canManage(user)) return send(response, 403, { error: "Only administrators can edit program templates." });
+    if (!canManageTemplates(user)) return send(response, 403, { error: "Only administrators and program managers can edit program templates." });
     const templateId = decodeURIComponent(path.slice("/api/templates/".length));
     const template = database.prepare("SELECT * FROM templates WHERE id=?").get(templateId);
     if (!template) return send(response, 404, { error: "Template not found." });
@@ -932,7 +948,7 @@ async function handleApi(request, response, url) {
   }
   if (request.method === "GET" && path.startsWith("/api/projects/")) {
     const projectId = decodeURIComponent(path.slice("/api/projects/".length));
-    if (!canAccessProject(user, projectId)) return send(response, 404, { error: "Project not found." });
+    if (!canViewProject(user, projectId)) return send(response, 404, { error: "Project not found." });
     const row = database.prepare(`SELECT p.*,u.name AS manager_name,
       (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id) AS task_count,
       (SELECT COUNT(*) FROM tasks t WHERE t.project_id=p.id AND t.status='Completed') AS completed_count
@@ -959,12 +975,25 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && path === "/api/projects") {
     if (user.role === "employee" || user.role === "external_partner") return send(response, 403, { error: "You do not have permission to create programs." });
     const input = await readBody(request);
-    const required = ["name", "programType", "location", "startDate", "endDate", "templateId", "projectManagerId"];
+    const location = String(input.location || [input.city, input.state].filter(Boolean).join(", ")).trim();
+    const endDate = String(input.endDate || input.startDate || "");
+    const required = ["name", "programType", "projectManagerId"];
     if (required.some((key) => !String(input[key] || "").trim())) return send(response, 400, { error: "Complete all required project fields." });
-    if (!validateDate(input.startDate) || !validateDate(input.endDate) || input.endDate < input.startDate) return send(response, 400, { error: "Enter valid program dates; the end date must be on or after the start date." });
-    if (!getUser(input.projectManagerId) || getUser(input.projectManagerId).role === "external_partner") return send(response, 400, { error: "Choose an internal employee as the project manager." });
-    const template = database.prepare("SELECT * FROM templates WHERE id=?").get(input.templateId);
-    if (!template) return send(response, 400, { error: "Choose a valid task template." });
+    if (!location) return send(response, 400, { error: "Enter a program city and state." });
+    if (!validateDate(input.startDate) || !validateDate(endDate) || endDate < input.startDate) return send(response, 400, { error: "Enter valid program dates; the end date must be on or after the start date." });
+    const manager = getUser(input.projectManagerId);
+    if (!manager || manager.role === "external_partner") return send(response, 400, { error: "Choose an internal employee as the project manager." });
+    const creationMode = input.creationMode === "scratch" ? "scratch" : "template";
+    const template = creationMode === "template" && input.templateId
+      ? database.prepare("SELECT * FROM templates WHERE id=?").get(input.templateId)
+      : null;
+    if (creationMode === "template" && !template) return send(response, 400, { error: "Choose a valid task template, or select Create from scratch." });
+    const programHours = input.programHours === "" || input.programHours === undefined
+      ? null
+      : Number(input.programHours);
+    if (programHours !== null && (!Number.isFinite(programHours) || programHours < 0 || programHours > 24)) {
+      return send(response, 400, { error: "Program hours must be between 0 and 24." });
+    }
     const id = randomUUID();
     const timestamp = nowISO();
     const managerId = input.projectManagerId;
@@ -975,33 +1004,102 @@ async function handleApi(request, response, url) {
       primaryContact: input.primaryContact || "", contactEmail: input.contactEmail || "",
       shippingAddress: input.shippingAddress || "", participants: Number(input.participants || 0),
       instructorRequirements: input.instructorRequirements || "", volunteerRequirements: input.volunteerRequirements || "",
-      specialRequirements: input.specialRequirements || "", notes: input.notes || ""
+      specialRequirements: input.specialRequirements || "", notes: input.notes || "",
+      city: String(input.city || location.split(",")[0] || "").trim(),
+      state: String(input.state || location.split(",").slice(1).join(",") || "").trim(),
+      deliveryType: String(input.deliveryType || ""), programHours,
+      leadInstructors: String(input.leadInstructors || "").trim(),
+      creationMode, sourceTemplateId: template?.id || null
     };
-    insertProject.run(id, input.name.trim(), input.description || "", input.programType, input.location.trim(),
-      input.hostOrganization || "", input.startDate, input.endDate, "Planning", managerId, JSON.stringify(details), timestamp, timestamp);
-    const members = new Set([managerId, user.id, "u-catalina"]);
-    const addMember = database.prepare("INSERT OR IGNORE INTO project_members(project_id,user_id,project_role) VALUES(?,?,?)");
-    for (const memberId of members) addMember.run(id, memberId, memberId === managerId ? "Project Manager" : "Team Member");
-    const templateTasks = database.prepare("SELECT * FROM template_tasks WHERE template_id=? ORDER BY rowid").all(template.id);
-    const createdIds = [];
-    const insertTask = database.prepare(`INSERT INTO tasks
-      (id,project_id,template_task_id,title,description,assigned_user_id,status,priority,due_date,milestone,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`);
-    const insertDependency = database.prepare("INSERT INTO task_dependencies(task_id,prerequisite_task_id) VALUES(?,?)");
-    for (const task of templateTasks) {
-      const taskId = randomUUID();
-      createdIds.push(taskId);
-      const assignedUser = resolveRoleAssignment(task.default_role, managerId);
-      insertTask.run(taskId, id, task.id, task.title, task.description, assignedUser, "Not Started",
-        task.priority, addDays(input.startDate, task.relative_due_days), task.milestone, timestamp, timestamp);
-      if (task.dependency_index !== null) {
-        const prerequisite = createdIds[task.dependency_index - 1];
-        if (prerequisite) insertDependency.run(taskId, prerequisite);
+    database.exec("BEGIN");
+    try {
+      insertProject.run(id, input.name.trim(), input.description || "", input.programType, location,
+        input.hostOrganization || "", input.startDate, endDate, "Planning", managerId, JSON.stringify(details), timestamp, timestamp);
+      const members = new Set([managerId, user.id]);
+      const addMember = database.prepare("INSERT OR IGNORE INTO project_members(project_id,user_id,project_role) VALUES(?,?,?)");
+      for (const memberId of members) addMember.run(id, memberId, memberId === managerId ? "Project Manager" : "Team Member");
+      const templateTasks = template
+        ? database.prepare("SELECT * FROM template_tasks WHERE template_id=? ORDER BY rowid").all(template.id)
+        : [];
+      const createdIds = [];
+      const insertTask = database.prepare(`INSERT INTO tasks
+        (id,project_id,template_task_id,title,description,assigned_user_id,status,priority,due_date,milestone,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`);
+      const insertDependency = database.prepare("INSERT INTO task_dependencies(task_id,prerequisite_task_id) VALUES(?,?)");
+      for (const task of templateTasks) {
+        const taskId = randomUUID();
+        createdIds.push(taskId);
+        const assignedUser = resolveRoleAssignment(task.default_role, managerId);
+        insertTask.run(taskId, id, task.id, task.title, task.description, assignedUser, "Not Started",
+          task.priority, addDays(input.startDate, task.relative_due_days), task.milestone, timestamp, timestamp);
+        if (task.dependency_index !== null) {
+          const prerequisite = createdIds[task.dependency_index - 1];
+          if (prerequisite) insertDependency.run(taskId, prerequisite);
+        }
+        if (assignedUser !== user.id) notifyUser(assignedUser, id, `New task assigned: ${task.title} — ${input.name.trim()}`);
       }
-      if (assignedUser !== user.id) notifyUser(assignedUser, id, `New task assigned: ${task.title} — ${input.name}`);
+      logActivity(id, null, user.id, "Project created",
+        template ? `${input.name.trim()} created from ${template.name}.` : `${input.name.trim()} created from scratch.`);
+      database.exec("COMMIT");
+      return send(response, 201, { projectId: id, taskCount: createdIds.length });
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
     }
-    logActivity(id, null, user.id, "Project created", `${input.name} created from ${template.name}.`);
-    return send(response, 201, { projectId: id, taskCount: createdIds.length });
+  }
+  if (request.method === "POST" && path.startsWith("/api/projects/") && path.endsWith("/tasks")) {
+    const projectId = decodeURIComponent(path.slice("/api/projects/".length, -"/tasks".length));
+    const project = database.prepare("SELECT id,name FROM projects WHERE id=?").get(projectId);
+    if (!project || !(canManage(user) || (user.role === "program_manager" && canAccessProject(user, projectId)))) {
+      return send(response, 404, { error: "Program not found or you do not have permission to add tasks." });
+    }
+    const input = await readBody(request);
+    const title = String(input.title || "").trim();
+    const dueDate = String(input.dueDate || "");
+    const milestone = String(input.milestone || "Program operations").trim();
+    const priority = String(input.priority || "Medium");
+    const assignedUserId = input.assignedUserId ? String(input.assignedUserId) : null;
+    const description = String(input.description || "").trim();
+    const dependencyIds = Array.isArray(input.dependencyIds) ? [...new Set(input.dependencyIds.map(String))] : [];
+    if (!title || title.length > 200 || !milestone || milestone.length > 100 || description.length > 4000) {
+      return send(response, 400, { error: "Enter a task name (up to 200 characters), description (up to 4,000 characters), and planning phase (up to 100 characters)." });
+    }
+    if (dependencyIds.length > 100) return send(response, 400, { error: "A task can have at most 100 prerequisites." });
+    if (!validateDate(dueDate)) return send(response, 400, { error: "Enter a valid task deadline." });
+    if (!["Low", "Medium", "High"].includes(priority)) return send(response, 400, { error: "Choose Low, Medium, or High priority." });
+    if (assignedUserId) {
+      const assignee = getUser(assignedUserId);
+      if (!assignee || assignee.role === "external_partner") return send(response, 400, { error: "Choose an active internal teammate as the task owner." });
+    }
+    if (dependencyIds.length) {
+      const placeholders = dependencyIds.map(() => "?").join(",");
+      const validDependencies = database.prepare(`SELECT id FROM tasks WHERE project_id=? AND id IN (${placeholders})`).all(projectId, ...dependencyIds);
+      if (validDependencies.length !== dependencyIds.length) {
+        return send(response, 400, { error: "Every prerequisite must be a different task in this program." });
+      }
+    }
+    const timestamp = nowISO();
+    const taskId = randomUUID();
+    database.exec("BEGIN");
+    try {
+      database.prepare(`INSERT INTO tasks
+        (id,project_id,template_task_id,title,description,assigned_user_id,status,priority,due_date,due_date_override,milestone,created_at,updated_at)
+        VALUES(?,?,NULL,?,?,?,'Not Started',?,?,1,?,?,?)`)
+        .run(taskId, projectId, title, description, assignedUserId, priority, dueDate, milestone, timestamp, timestamp);
+      const addDependency = database.prepare("INSERT INTO task_dependencies(task_id,prerequisite_task_id) VALUES(?,?)");
+      for (const prerequisiteId of dependencyIds) addDependency.run(taskId, prerequisiteId);
+      if (assignedUserId) {
+        database.prepare("INSERT OR IGNORE INTO project_members(project_id,user_id,project_role) VALUES(?,?,'Member')")
+          .run(projectId, assignedUserId);
+        if (assignedUserId !== user.id) notifyUser(assignedUserId, projectId, `New task assigned: ${title} — ${project.name}`);
+      }
+      logActivity(projectId, taskId, user.id, "Task created", `${title} added with ${priority.toLowerCase()} priority.`);
+      database.exec("COMMIT");
+      return send(response, 201, { taskId });
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
   }
   if (request.method === "PATCH" && path.startsWith("/api/tasks/") && path.endsWith("/status")) {
     const taskId = decodeURIComponent(path.slice("/api/tasks/".length, -"/status".length));
