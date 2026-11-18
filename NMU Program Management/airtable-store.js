@@ -134,8 +134,8 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     return [];
   });
 
-  async function schema() {
-    if (schemaCache && schemaCache.expires > Date.now()) return schemaCache.tables;
+  async function schema({ fresh = false } = {}) {
+    if (!fresh && schemaCache && schemaCache.expires > Date.now()) return schemaCache.tables;
     const tables = await client.getSchema();
     schemaCache = { tables, expires: Date.now() + schemaCacheMs };
     return tables;
@@ -152,6 +152,13 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     return live?.type === "multipleSelects" ? [picked] : picked;
   }
   async function assertWritable(table, names) {
+    // A field added since the schema was cached (e.g. by airtable:setup) shouldn't
+    // need a restart: re-read the schema once before reporting it missing.
+    const has = (tables) => {
+      const found = tables.find((item) => item.name === table);
+      return found && names.every((name) => found.fields.some((field) => field.name === name));
+    };
+    if (!has(await schema())) await schema({ fresh: true });
     const live = (await schema()).find((item) => item.name === table);
     if (!live) throw Object.assign(new Error(`The Airtable base has no "${table}" table. Run npm run airtable:setup -- --apply.`), { status: 503 });
     for (const name of names) {
@@ -533,7 +540,7 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   const removeResource = (id) => destroy(T.resources, [id]);
 
   async function checkSchema() {
-    const tables = await schema();
+    const tables = await schema({ fresh: true });
     return { tables, ...compareSchema(tables) };
   }
   async function browseTable(tableId, { query = "", limit = 25, offset = 0 } = {}) {

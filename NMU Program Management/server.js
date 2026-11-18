@@ -864,5 +864,8 @@ const port = Number(process.env.PORT || 3000);
 server.listen(port, "0.0.0.0", () => {
   console.log(`NMU Program Management running at http://localhost:${port}`);
   if (!client.configured) console.warn("Airtable is not configured: set AIRTABLE_API_KEY and AIRTABLE_BASE_ID.");
-  else administratorReady().catch((error) => console.error(`Could not provision the administrator in Airtable: ${error.message}`));
+  else {
+    console.log(`Using Airtable base ${process.env.AIRTABLE_BASE_ID}.`);
+    administratorReady().catch((error) => console.error(`Could not provision the administrator in Airtable: ${error.message}`));
+  }
 });

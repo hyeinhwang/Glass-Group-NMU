@@ -158,6 +158,11 @@ export function createMockAirtable({ baseId = "appMock", tables: tableDefs, rows
 
   return {
     baseId, requests, writes, uploads,
+    // Simulates someone adding a field in Airtable while the app is running.
+    addField: (tableName, field) => {
+      const table = schema.find((item) => item.name === tableName);
+      table.fields.push({ id: `fld${table.id}${table.fields.length}`, name: field.name, type: field.type, options: {} });
+    },
     records: (tableName) => data.get(tableName),
     record: (tableName, id) => data.get(tableName).find((record) => record.id === id),
     read: (tableName, id) => withComputed(tableName, data.get(tableName).find((record) => record.id === id)),
