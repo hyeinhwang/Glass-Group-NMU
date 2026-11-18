@@ -203,7 +203,15 @@ export function createAirtableClient(options = {}) {
     return request(metaUrl(`/${encodeURIComponent(tableId)}/fields`), { method: "POST", body: field });
   }
 
-  return { configured, stats, getSchema, listRecords, getRecord, createRecords, updateRecords, deleteRecords, createTable, createField };
+  // Uploads a file (up to 5 MB) into an attachment field of an existing record.
+  // https://airtable.com/developers/web/api/upload-attachment
+  const contentRoot = () => root().replace("://api.airtable.com", "://content.airtable.com");
+  async function uploadAttachment(recordId, field, { contentType, filename, data }) {
+    const url = `${contentRoot()}/${encodeURIComponent(baseId)}/${encodeURIComponent(recordId)}/${encodeURIComponent(field)}/uploadAttachment`;
+    return request(url, { method: "POST", body: { contentType, filename, file: Buffer.from(data).toString("base64") } });
+  }
+
+  return { configured, stats, getSchema, listRecords, getRecord, createRecords, updateRecords, deleteRecords, createTable, createField, uploadAttachment };
 }
 
 export function airtableClientFromEnv(env = process.env, overrides = {}) {

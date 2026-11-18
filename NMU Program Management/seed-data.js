@@ -160,6 +160,16 @@ export function demoRows({ today = new Date().toISOString().slice(0, 10), includ
     [F.activity.action]: action, [F.activity.details]: details, [F.activity.session]: [session],
     [F.activity.work]: [work], [F.activity.user]: [user]
   } }));
+  rows[T.resources] = [
+    ["p-everett", null, "Everett Summer Swim — shared folder", "https://drive.google.com/drive/folders/nmu-everett-demo", "u-catalina"],
+    ["p-everett", null, "Host agreement (Google Doc)", "https://docs.google.com/document/d/nmu-everett-demo", "u-catalina"],
+    ["p-everett", null, "Pool booking — Everett Parks", "https://www.everettwa.gov/", "u-jordan"],
+    ["p-tacoma", "p-tacoma-task-5", "Instructor applications folder", "https://drive.google.com/drive/folders/nmu-tacoma-demo", "u-catalina"],
+    ["p-tacoma", "p-tacoma-task-5", "WSI certification lookup", "https://www.redcross.org/", "u-jordan"]
+  ].map(([session, work, title, url, user], index) => ({ id: `r-${index + 1}`, fields: {
+    [F.resources.title]: title, [F.resources.kind]: "Link", [F.resources.url]: url,
+    [F.resources.session]: [session], ...(work ? { [F.resources.work]: [work] } : {}), [F.resources.addedBy]: [user]
+  } }));
   rows[T.notifications] = [
     ["u-jordan", "p-tacoma", "Tacoma Swim Program has overdue preparation work."],
     ["u-catalina", "p-seattle", "Review the upcoming Seattle program timeline."]
@@ -173,7 +183,7 @@ export function demoRows({ today = new Date().toISOString().slice(0, 10), includ
 // Writes seed rows into a base, replacing placeholder IDs in link fields with the
 // record IDs Airtable returns. Tables are written in dependency order.
 export async function insertSeed(client, rows, log = () => {}) {
-  const order = [T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications];
+  const order = [T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications, T.resources];
   const idMap = new Map();
   const mapLinks = (fields) => Object.fromEntries(Object.entries(fields).map(([name, value]) => [name,
     Array.isArray(value) ? value.map((item) => idMap.get(item) || item) : value]));

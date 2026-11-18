@@ -248,6 +248,53 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
     createdTasks.find((item) => item.id === task.id).title = stored.title;
   });
 
+  await t.test("stores program and task files and links in Airtable", async () => {
+    const task = createdTasks.find((item) => item.title === "Recruit instructors");
+    const addLink = (body, user = "u-jordan", taskId = "") => request(`/api/projects/${createdProjectId}/resources/links${taskId ? `?taskId=${taskId}` : ""}`, user, { method: "POST", body: JSON.stringify(body) });
+    assert.equal((await addLink({ title: "Bad", url: "javascript:alert(1)" })).status, 400);
+    assert.equal((await addLink({ title: "Folder", url: "https://drive.google.com/drive/folders/abc" }, "u-partner")).status, 404, "partners can't add to programs they don't own tasks in");
+    const programLink = await addLink({ title: "Shared folder", url: "https://drive.google.com/drive/folders/abc" });
+    assert.equal(programLink.status, 201, JSON.stringify(programLink.body));
+    assert.equal((await addLink({ url: "https://www.redcross.org/wsi" }, "u-jordan", task.id)).status, 201);
+
+    const upload = (bytes, { user = "u-jordan", name = "Instructor certifications.pdf", taskId = task.id } = {}) =>
+      fetch(`${baseUrl}/api/projects/${createdProjectId}/resources/files?taskId=${taskId}&name=${encodeURIComponent(name)}`, {
+        method: "POST", headers: { "content-type": "application/pdf", "x-demo-user": user }, body: bytes
+      });
+    const pdf = Buffer.from("%PDF-1.4 test certificate");
+    const uploaded = await upload(pdf);
+    assert.equal(uploaded.status, 201, await uploaded.clone().text());
+    const tooBig = await upload(Buffer.alloc(5 * 1024 * 1024 + 1));
+    assert.equal(tooBig.status, 413);
+    assert.match((await tooBig.json()).error, /5 MB/);
+
+    const project = await request(`/api/projects/${createdProjectId}`, "u-jordan");
+    const resources = project.body.resources;
+    assert.equal(resources.length, 3);
+    const file = resources.find((item) => item.kind === "File");
+    assert.equal(file.fileName, "Instructor certifications.pdf");
+    assert.equal(file.size, pdf.length);
+    assert.equal(file.taskId, task.id);
+    assert.equal(file.taskTitle, "Recruit instructors");
+    assert.equal(file.addedBy, "Jordan Ellis");
+    assert.equal(resources.find((item) => item.title === "redcross.org").host, "redcross.org", "a link without a title uses its site name");
+    assert.equal(mockAirtable.uploads.length, 1);
+    assert.equal(mockAirtable.uploads[0].field, "File");
+    // Downloads go through the app, which fetches a fresh Airtable URL.
+    const download = await fetch(`${baseUrl}${file.downloadUrl}`, { headers: { "x-demo-user": "u-jordan" } });
+    assert.equal(download.status, 200);
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), pdf);
+    assert.ok(project.body.activities.some((item) => item.action === "File uploaded"));
+
+    // Only the person who added it or a manager can remove it.
+    const employeeView = await request(`/api/projects/${createdProjectId}`, "u-mary");
+    assert.equal(employeeView.body.resources.find((item) => item.id === file.id).canRemove, false);
+    assert.equal((await request(`/api/resources/${file.id}`, "u-mary", { method: "DELETE" })).status, 403);
+    assert.equal((await request(`/api/resources/${programLink.body.id}`, "u-jordan", { method: "DELETE" })).status, 200);
+    const after = await request(`/api/projects/${createdProjectId}`, "u-jordan");
+    assert.equal(after.body.resources.length, 2);
+  });
+
   await t.test("blocks task completion until prerequisites are complete", async () => {
     const backgroundCheck = createdTasks.find((task) => task.title === "Complete background checks");
     const recruitInstructors = createdTasks.find((task) => task.title === "Recruit instructors");

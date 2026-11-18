@@ -34,6 +34,8 @@ export function createMockAirtable({ baseId = "appMock", tables: tableDefs, rows
   }
 
   const requests = [];
+  const files = new Map();
+  const uploads = [];
   const writes = [];
   let failures = [];
   const resolveTable = (key) => {
@@ -67,12 +69,43 @@ export function createMockAirtable({ baseId = "appMock", tables: tableDefs, rows
       response.end(JSON.stringify(body));
     };
     requests.push({ method: request.method, path: url.pathname });
+    // Attachment downloads are public, expiring URLs in real Airtable.
+    if (request.method === "GET" && url.pathname.startsWith("/files/")) {
+      const file = files.get(url.pathname.slice(7));
+      if (!file) return json(404, { error: { type: "NOT_FOUND" } });
+      response.writeHead(200, { "content-type": file.type, "content-disposition": `attachment; filename="${file.filename}"` });
+      return response.end(file.data);
+    }
     if (request.headers.authorization !== "Bearer test-token") return json(401, { error: { type: "AUTHENTICATION_REQUIRED" } });
     if (failures.length) {
       const status = failures.shift();
       return json(status, { errors: [{ error: status === 429 ? "RATE_LIMIT_REACHED" : "SERVER_ERROR" }] });
     }
     if (url.pathname === `/v0/meta/bases/${baseId}/tables`) return json(200, { tables: schema });
+    // Upload attachment: POST /v0/{baseId}/{recordId}/{field}/uploadAttachment
+    const upload = url.pathname.match(/^\/v0\/([^/]+)\/([^/]+)\/([^/]+)\/uploadAttachment$/);
+    if (upload && request.method === "POST") {
+      const [, base, recordId, fieldKey] = upload.map(decodeURIComponent);
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      const body = JSON.parse(raw || "{}");
+      const owner = [...data].find(([, records]) => records.some((record) => record.id === recordId));
+      if (base !== baseId || !owner) return json(404, { error: { type: "NOT_FOUND" } });
+      const table = schema.find((item) => item.name === owner[0]);
+      const field = table.fields.find((item) => item.name === fieldKey || item.id === fieldKey);
+      if (field?.type !== "multipleAttachments") return json(422, { error: { type: "INVALID_ATTACHMENT_FIELD" } });
+      const bytes = Buffer.from(body.file || "", "base64");
+      if (bytes.length > 5 * 1024 * 1024) return json(413, { error: { type: "ATTACHMENT_TOO_LARGE" } });
+      const id = `att${String(++counter).padStart(7, "0")}`;
+      files.set(id, { data: bytes, type: body.contentType, filename: body.filename });
+      const record = owner[1].find((item) => item.id === recordId);
+      const address = server.address();
+      record.fields[field.name] = [...(record.fields[field.name] || []), {
+        id, url: `http://127.0.0.1:${address.port}/files/${id}`, filename: body.filename, size: bytes.length, type: body.contentType
+      }];
+      uploads.push({ recordId, field: field.name, filename: body.filename, size: bytes.length });
+      return json(200, { id: recordId, createdTime: record.createdTime, fields: { [field.id]: record.fields[field.name] } });
+    }
     const [, version, base, tableKey, recordId] = url.pathname.split("/").map(decodeURIComponent);
     const table = resolveTable(tableKey);
     if (version !== "v0" || base !== baseId || !table) return json(404, { error: { type: "NOT_FOUND" } });
@@ -124,7 +157,7 @@ export function createMockAirtable({ baseId = "appMock", tables: tableDefs, rows
   });
 
   return {
-    baseId, requests, writes,
+    baseId, requests, writes, uploads,
     records: (tableName) => data.get(tableName),
     record: (tableName, id) => data.get(tableName).find((record) => record.id === id),
     read: (tableName, id) => withComputed(tableName, data.get(tableName).find((record) => record.id === id)),

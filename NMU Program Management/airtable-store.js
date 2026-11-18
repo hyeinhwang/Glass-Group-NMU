@@ -121,6 +121,15 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     return cached?.promise || fetchTable(table);
   }
   const invalidate = (...tables) => tables.forEach((table) => cache.delete(table));
+  // Tables the app adds to the base. Until `airtable:setup` has created them the app
+  // still works; it just has no comments, activity, notifications or resources yet.
+  const OPTIONAL = new Set([T.comments, T.activity, T.notifications, T.resources]);
+  const missingTables = new Set();
+  const loadOptional = (table) => loadTable(table).then((records) => { missingTables.delete(table); return records; }, (error) => {
+    if (!OPTIONAL.has(table) || ![403, 404].includes(error.status)) throw error;
+    missingTables.add(table);
+    return [];
+  });
 
   async function schema() {
     if (schemaCache && schemaCache.expires > Date.now()) return schemaCache.tables;
@@ -177,8 +186,8 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   // ------------------------------------------------------------ reading
 
   async function model() {
-    const [userRecords, templateRecords, stepRecords, sessionRecords, workRecords, commentRecords, activityRecords, notificationRecords] =
-      await Promise.all([T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications].map(loadTable));
+    const [userRecords, templateRecords, stepRecords, sessionRecords, workRecords, commentRecords, activityRecords, notificationRecords, resourceRecords] =
+      await Promise.all([T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications, T.resources].map(loadOptional));
 
     const users = userRecords.map((record) => {
       const f = record.fields || {};
@@ -314,10 +323,28 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
       message: textValue(record.fields?.[F.notifications.message]),
       is_read: Boolean(record.fields?.[F.notifications.read]), created_at: record.createdTime
     }));
+    const resources = resourceRecords.map((record) => {
+      const f = record.fields || {};
+      const attachment = Array.isArray(f[F.resources.file]) ? f[F.resources.file][0] : null;
+      const taskId = linkedIds(f[F.resources.work])[0] || null;
+      return {
+        id: record.id, kind: textValue(f[F.resources.kind]) === "File" || attachment ? "File" : "Link",
+        title: textValue(f[F.resources.title]) || textValue(f[F.resources.fileName]) || attachment?.filename || textValue(f[F.resources.url]),
+        url: textValue(f[F.resources.url]) || null,
+        file_url: attachment?.url || null,
+        file_name: textValue(f[F.resources.fileName]) || attachment?.filename || null,
+        size: numberValue(f[F.resources.size]) ?? attachment?.size ?? null,
+        content_type: textValue(f[F.resources.contentType]) || attachment?.type || null,
+        task_id: taskId,
+        project_id: linkedIds(f[F.resources.session])[0] || tasksById.get(taskId)?.project_id || null,
+        user_id: linkedIds(f[F.resources.addedBy])[0] || null,
+        created_at: record.createdTime
+      };
+    }).filter((item) => projectsById.has(item.project_id) && (item.kind === "Link" ? item.url : true));
     const newestFirst = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
-    comments.sort(newestFirst); activities.sort(newestFirst); notifications.sort(newestFirst);
+    comments.sort(newestFirst); activities.sort(newestFirst); notifications.sort(newestFirst); resources.sort(newestFirst);
 
-    return { users, usersById, templates, templateTasks, projects, projectsById, tasks, tasksById, comments, activities, notifications };
+    return { users, usersById, templates, templateTasks, projects, projectsById, tasks, tasksById, comments, activities, notifications, resources };
   }
 
   // ------------------------------------------------------------ writing
@@ -412,6 +439,41 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     await update(T.steps, records);
   }
 
+  async function addLink({ projectId, taskId, userId, title, url }) {
+    const fields = { [F.resources.title]: title, [F.resources.kind]: await choice(T.resources, F.resources.kind, "Link"), [F.resources.url]: url,
+      [F.resources.session]: [projectId], [F.resources.addedBy]: [userId] };
+    if (taskId) fields[F.resources.work] = [taskId];
+    return (await create(T.resources, [{ fields }]))[0].id;
+  }
+  // Creates the Resources record, then uploads the bytes into its attachment field.
+  // If the upload fails the record is removed again.
+  async function addFile({ projectId, taskId, userId, fileName, contentType, data }) {
+    const fields = { [F.resources.title]: fileName, [F.resources.kind]: await choice(T.resources, F.resources.kind, "File"),
+      [F.resources.fileName]: fileName, [F.resources.size]: data.length, [F.resources.contentType]: contentType,
+      [F.resources.session]: [projectId], [F.resources.addedBy]: [userId] };
+    if (taskId) fields[F.resources.work] = [taskId];
+    await assertWritable(T.resources, [F.resources.file]);
+    const [record] = await create(T.resources, [{ fields }]);
+    try {
+      await client.uploadAttachment(record.id, F.resources.file, { contentType, filename: fileName, data });
+      lastWrite = { at: new Date().toISOString(), table: T.resources, kind: "upload", count: 1 };
+    } catch (error) {
+      failures.unshift({ at: new Date().toISOString(), table: T.resources, kind: "upload", message: error.message });
+      await destroy(T.resources, [record.id]).catch(() => {});
+      throw error;
+    } finally {
+      invalidate(T.resources);
+    }
+    return record.id;
+  }
+  // Attachment URLs from Airtable expire after a few hours, so downloads read a fresh one.
+  async function freshFileUrl(resourceId) {
+    const record = await client.getRecord(T.resources, resourceId);
+    const attachment = Array.isArray(record.fields?.[F.resources.file]) ? record.fields[F.resources.file][0] : null;
+    return attachment?.url || null;
+  }
+  const removeResource = (id) => destroy(T.resources, [id]);
+
   async function checkSchema() {
     const tables = await schema();
     return { tables, ...compareSchema(tables) };
@@ -436,11 +498,12 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     }
     return { table: { id: table.id, name: table.name, fields: table.fields }, records: page, recordLabels, total: matching.length };
   }
-  const status = () => ({ configured: client.configured, lastRead, lastWrite, recentFailures: failures.slice(0, 5), retries: client.stats?.retries || 0, readFailures });
+  const status = () => ({ configured: client.configured, missingTables: [...missingTables], lastRead, lastWrite, recentFailures: failures.slice(0, 5), retries: client.stats?.retries || 0, readFailures });
 
   return {
     client, schema, model, invalidate, loadTable, status, checkSchema, browseTable,
     createUser, updateUser, createProject, updateProject, createTasks, updateTasks, deleteRecords,
-    addComment, logActivity, notify, markNotificationRead, updateTemplate, updateSteps
+    addComment, logActivity, notify, markNotificationRead, updateTemplate, updateSteps,
+    addLink, addFile, freshFileUrl, removeResource
   };
 }

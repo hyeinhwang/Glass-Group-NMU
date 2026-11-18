@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { airtableClientFromEnv } from "./airtable-client.js";
 import { createAirtableStore, addDays, isValidDate as validateDate } from "./airtable-store.js";
+import { T, MAX_UPLOAD_BYTES } from "./airtable-schema.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = join(root, "public");
@@ -159,6 +160,41 @@ function resolveRoleAssignment(model, role, managerId) {
   return managerId;
 }
 
+// Files and links: internal teammates on a program can add them to the program;
+// anyone who can edit a task can add them to that task. Partners see only their tasks'.
+function canAddResource(model, user, projectId, task) {
+  if (task) return canEditTask(model, user, task) || (user.role !== "external_partner" && canAccessProject(model, user, projectId));
+  return user.role !== "external_partner" && canAccessProject(model, user, projectId);
+}
+function canSeeResource(model, user, resource) {
+  if (!canViewProject(model, user, resource.project_id)) return false;
+  if (user.role !== "external_partner") return true;
+  const task = model.tasksById.get(resource.task_id);
+  return Boolean(task && isTaskOwner(task, user.id));
+}
+const canRemoveResource = (model, user, resource) => resource.user_id === user.id || canManage(user)
+  || (user.role === "program_manager" && canAccessProject(model, user, resource.project_id));
+function resourceResponse(model, resource, viewer) {
+  let host = null;
+  try { host = resource.url ? new URL(resource.url).hostname.replace(/^www\./, "") : null; } catch {}
+  return {
+    id: resource.id, kind: resource.kind, title: resource.title, url: resource.url, host,
+    fileName: resource.file_name, size: resource.size, contentType: resource.content_type,
+    downloadUrl: resource.kind === "File" ? `/api/resources/${encodeURIComponent(resource.id)}/file` : null,
+    taskId: resource.task_id, taskTitle: model.tasksById.get(resource.task_id)?.title || null,
+    addedBy: model.usersById.get(resource.user_id)?.name || "Unknown", createdAt: resource.created_at,
+    canRemove: canRemoveResource(model, viewer, resource)
+  };
+}
+function cleanUrl(value) {
+  try {
+    const url = new URL(String(value || "").trim());
+    return ["http:", "https:"].includes(url.protocol) && url.href.length <= 2000 ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 // ------------------------------------------------------------------ responses
 
 function taskResponse(model, task, viewer) {
@@ -205,7 +241,7 @@ function templateResponse(model, template, { full = true } = {}) {
 const integrationStatus = () => {
   const status = store.status();
   return {
-    airtableConfigured: status.configured, live: true, lastRead: status.lastRead, lastWrite: status.lastWrite,
+    airtableConfigured: status.configured, live: true, missingTables: status.missingTables, maxUploadBytes: MAX_UPLOAD_BYTES, lastRead: status.lastRead, lastWrite: status.lastWrite,
     recentFailures: status.recentFailures, refreshSeconds: Math.round((Number(process.env.NMU_AIRTABLE_CACHE_MS) || 15_000) / 1000)
   };
 };
@@ -227,6 +263,21 @@ function readBody(request) {
     request.on("end", () => {
       try { resolve(body ? JSON.parse(body) : {}); } catch { reject(new Error("Request body must be valid JSON.")); }
     });
+    request.on("error", reject);
+  });
+}
+// Raw request body (file uploads), capped at `limit` bytes.
+function readRaw(request, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      // Too big: keep reading (and discarding) so the 413 reply can still be sent.
+      if (size > limit) return reject(Object.assign(new Error("Files can be up to 5 MB. For bigger files, add a Google Drive link instead."), { status: 413 }));
+      chunks.push(chunk);
+    });
+    request.on("end", () => resolve(Buffer.concat(chunks)));
     request.on("error", reject);
   });
 }
@@ -410,6 +461,8 @@ async function handleApi(request, response, url) {
     const comments = model.comments.filter((item) => taskIds.has(item.task_id)).slice(0, 30)
       .map((item) => ({ id: item.id, taskId: item.task_id, userName: model.usersById.get(item.user_id)?.name || "Unknown", content: item.content, createdAt: item.created_at }));
     const partner = user.role === "external_partner";
+    const resources = model.resources.filter((item) => item.project_id === projectId && canSeeResource(model, user, item))
+      .map((item) => resourceResponse(model, item, user));
     const visibleProject = projectResponse(model, project);
     if (partner) visibleProject.details = {};
     return send(response, 200, {
@@ -417,7 +470,8 @@ async function handleApi(request, response, url) {
       members: partner ? members.filter((member) => member.id === user.id) : members,
       tasks,
       activities: partner ? activities.filter((item) => item.userName === user.name) : activities,
-      comments: partner ? comments.filter((item) => tasks.some((task) => task.id === item.taskId)) : comments
+      comments: partner ? comments.filter((item) => tasks.some((task) => task.id === item.taskId)) : comments,
+      resources
     });
   }
   if (request.method === "POST" && path === "/api/projects") {
@@ -611,6 +665,55 @@ async function handleApi(request, response, url) {
     }
   }
 
+  const resourceRoute = path.match(/^\/api\/projects\/([^/]+)\/resources\/(links|files)$/);
+  if (resourceRoute && request.method === "POST") {
+    const projectId = decodeURIComponent(resourceRoute[1]);
+    const project = model.projectsById.get(projectId);
+    const taskId = url.searchParams.get("taskId") || null;
+    const task = taskId ? model.tasksById.get(taskId) : null;
+    if (!project || (taskId && task?.project_id !== projectId) || !canAddResource(model, user, projectId, task)) {
+      return send(response, 404, { error: "Program or task not found, or you can't add files to it." });
+    }
+    if (resourceRoute[2] === "links") {
+      const input = await readBody(request);
+      const link = cleanUrl(input.url);
+      const title = String(input.title || "").trim().slice(0, 200);
+      if (!link) return send(response, 400, { error: "Enter a full web address starting with https://." });
+      let label = title;
+      if (!label) { try { label = new URL(link).hostname.replace(/^www\./, ""); } catch { label = link; } }
+      const id = await store.addLink({ projectId, taskId, userId: user.id, title: label, url: link });
+      await logActivity(projectId, taskId, user.id, "Link added", task ? `${label} added to ${task.title}.` : `${label} added to program resources.`);
+      return send(response, 201, { id });
+    }
+    const fileName = String(url.searchParams.get("name") || "").replace(/[\\/\u0000-\u001f]/g, "_").trim().slice(0, 200);
+    if (!fileName) return send(response, 400, { error: "The file needs a name." });
+    const declared = Number(request.headers["content-length"] || 0);
+    if (declared > MAX_UPLOAD_BYTES) return send(response, 413, { error: "Files can be up to 5 MB. For bigger files, add a Google Drive link instead." });
+    const data = await readRaw(request, MAX_UPLOAD_BYTES);
+    if (!data.length) return send(response, 400, { error: "The file is empty." });
+    const contentType = String(request.headers["content-type"] || "application/octet-stream").split(";")[0].trim().slice(0, 120) || "application/octet-stream";
+    const id = await store.addFile({ projectId, taskId, userId: user.id, fileName, contentType, data });
+    await logActivity(projectId, taskId, user.id, "File uploaded", task ? `${fileName} attached to ${task.title}.` : `${fileName} added to program resources.`);
+    return send(response, 201, { id });
+  }
+  const singleResource = path.match(/^\/api\/resources\/([^/]+)(\/file)?$/);
+  if (singleResource) {
+    const resource = model.resources.find((item) => item.id === decodeURIComponent(singleResource[1]));
+    if (!resource || !canSeeResource(model, user, resource)) return send(response, 404, { error: "File or link not found." });
+    if (request.method === "GET" && singleResource[2]) {
+      if (resource.kind !== "File") return send(response, 404, { error: "This resource is a link, not a file." });
+      const fileUrl = await store.freshFileUrl(resource.id);
+      if (!fileUrl) return send(response, 404, { error: "Airtable has no file for this record yet." });
+      response.writeHead(302, { location: fileUrl, "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      return response.end();
+    }
+    if (request.method === "DELETE" && !singleResource[2]) {
+      if (!canRemoveResource(model, user, resource)) return send(response, 403, { error: "Only the person who added it or a program manager can remove it." });
+      await store.removeResource(resource.id);
+      await logActivity(resource.project_id, resource.task_id, user.id, resource.kind === "File" ? "File removed" : "Link removed", `${resource.title} removed.`);
+      return send(response, 200, { ok: true });
+    }
+  }
   if (request.method === "POST" && path === "/api/projects/date-preview") {
     const input = await readBody(request);
     if (!canAccessProject(model, user, input.projectId)) return send(response, 404, { error: "Project not found." });
