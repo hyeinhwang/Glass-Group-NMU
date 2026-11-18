@@ -4,7 +4,7 @@ const state = {
   projectFilters: { city: "all", state: "all", programType: "all", host: "all", manager: "all", dateFrom: "", dateTo: "", sort: "date-asc" },
   taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks", taskSort: "due-asc", authRequired: false,
   calendar: { view: "month", cursor: new Date().toISOString().slice(0, 10), programId: "all" },
-  administratorConfigured: false, accountUsers: [], schemaCheck: null,
+  administratorConfigured: false, administratorError: "", accountUsers: [], schemaCheck: null,
   sync: { pending: 0, lastSavedAt: null, error: null, checkedAt: null, server: null },
   airtableData: { tables: [], selectedTableId: null, records: [], recordLabels: {}, total: 0, offset: 0, limit: 25, query: "", loading: false }
 };
@@ -69,6 +69,7 @@ async function refresh() {
     const config = await api("/api/auth/config");
     state.authRequired = config.required;
     state.administratorConfigured = config.administratorConfigured;
+    state.administratorError = config.administratorError || "";
     state.data = await api("/api/bootstrap");
     state.userId = state.data.currentUser.id;
     state.sync.server = state.data.integration;
@@ -91,7 +92,7 @@ function renderLogin(message = "") {
   document.body.classList.add("auth-screen");
   modalRoot.innerHTML = "";
   content.innerHTML = `<section class="login-card" aria-labelledby="login-title"><img class="login-logo" src="/nmu-logo.png" alt="No More Under" width="180" height="78"><div class="eyebrow">NMU PROGRAM OPERATIONS</div><h1 id="login-title">Sign in to your workspace</h1><p class="heading-copy">Use the NMU account created for you by an administrator.</p>
-    ${!state.administratorConfigured?`<div class="inline-error">No administrator account is configured yet. Set <span class="code">NMU_ADMIN_EMAIL</span> and <span class="code">NMU_ADMIN_PASSWORD</span> in Railway Variables, then redeploy.</div>`:""}
+    ${!state.administratorConfigured?`<div class="inline-error">${escapeHtml(state.administratorError || "No administrator account is configured yet. Check the service variables and Airtable Users table, then redeploy.")}</div>`:""}
     ${message?`<div class="inline-error">${escapeHtml(message)}</div>`:""}
     <form id="login-form"><div class="form-field"><label for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="username" required></div><div class="form-field"><label for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required></div><button class="button primary" type="submit" ${state.administratorConfigured?"":"disabled"}>Sign in</button></form>
   </section>`;

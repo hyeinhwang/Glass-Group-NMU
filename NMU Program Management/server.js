@@ -116,14 +116,17 @@ async function ensureAdministrator() {
   const existing = model.users.find((user) => user.email === email);
   if (!existing) {
     await store.createUser({ name: String(process.env.NMU_ADMIN_NAME || "NMU Administrator").trim(), email, role: "admin", passwordHash: hashPassword(password) });
-  } else if (existing.role === "admin" && !existing.password_hash) {
-    await store.updateUser(existing.id, { passwordHash: hashPassword(password) });
+  } else if (existing.role !== "admin" || !existing.password_hash) {
+    const updates = {};
+    if (existing.role !== "admin") updates.role = "admin";
+    if (existing.role !== "admin" || !existing.password_hash) updates.passwordHash = hashPassword(password);
+    await store.updateUser(existing.id, updates);
   }
 }
 const administratorReady = () => {
   adminBootstrap ||= ensureAdministrator().catch((error) => {
     adminBootstrap = null;
-    console.error(`Could not provision the administrator in Airtable: ${error.message}`);
+    throw error;
   });
   return adminBootstrap;
 };
@@ -292,13 +295,26 @@ async function handleApi(request, response, url) {
   const path = url.pathname;
   if (request.method === "GET" && path === "/api/auth/config") {
     let administratorConfigured = false;
+    let administratorError = null;
     if (client.configured) {
       try {
         await administratorReady();
-        administratorConfigured = (await store.model()).users.some((user) => user.role === "admin" && user.is_active && user.password_hash);
-      } catch {}
+        const model = await store.model();
+        administratorConfigured = model.users.some((user) => user.role === "admin" && user.is_active && user.password_hash);
+        if (!administratorConfigured) {
+          const email = String(process.env.NMU_ADMIN_EMAIL || "").trim();
+          const password = String(process.env.NMU_ADMIN_PASSWORD || "");
+          administratorError = !email || password.length < 12
+            ? "Set NMU_ADMIN_EMAIL and a 12+ character NMU_ADMIN_PASSWORD in the service variables to provision the first administrator."
+            : "No active Airtable Users record has administrator access and a password. Check the Users table's Rights and App Access Disabled fields.";
+        }
+      } catch (error) {
+        administratorError = `Could not verify or provision the administrator in Airtable: ${error.message}`;
+      }
+    } else {
+      administratorError = "Airtable is not connected. Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID in the service variables.";
     }
-    return send(response, 200, { required: authRequired, administratorConfigured, airtableConfigured: client.configured });
+    return send(response, 200, { required: authRequired, administratorConfigured, administratorError, airtableConfigured: client.configured });
   }
   if (!client.configured) {
     return send(response, 503, { error: "Airtable is not connected. Set AIRTABLE_API_KEY and AIRTABLE_BASE_ID in the service variables and restart." });
@@ -827,5 +843,5 @@ const port = Number(process.env.PORT || 3000);
 server.listen(port, "0.0.0.0", () => {
   console.log(`NMU Program Management running at http://localhost:${port}`);
   if (!client.configured) console.warn("Airtable is not configured: set AIRTABLE_API_KEY and AIRTABLE_BASE_ID.");
-  else administratorReady();
+  else administratorReady().catch((error) => console.error(`Could not provision the administrator in Airtable: ${error.message}`));
 });

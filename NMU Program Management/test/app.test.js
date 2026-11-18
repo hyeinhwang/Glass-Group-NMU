@@ -414,7 +414,18 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
   });
 
   await t.test("requires production sign-in and protects administrator actions", async () => {
-    const authAirtable = createMockAirtable({ tables: SCHEMA, rows: templateRows() });
+    const authAirtable = createMockAirtable({
+      tables: SCHEMA,
+      rows: {
+        ...templateRows(),
+        [T.users]: [{ fields: {
+          "Email Address": "initial-admin@nmu.test",
+          "First Name": "Initial",
+          "Last Name": "Admin",
+          Rights: "Employee"
+        } }]
+      }
+    });
     const authApiRoot = await authAirtable.start();
     const authPort = await availablePort();
     const authUrl = `http://127.0.0.1:${authPort}`;
@@ -481,6 +492,7 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       const bootstrap = await authRequest("/api/bootstrap", { cookie: adminCookie });
       assert.equal(bootstrap.status, 200);
       assert.equal(bootstrap.body.currentUser.email, adminEmail);
+      assert.equal(bootstrap.body.currentUser.role, "admin");
       assert.equal(bootstrap.body.projects.length, 0);
       const browserBootstrap = await authRequest("/api/bootstrap", { cookie: adminCookie, origin: "" });
       assert.equal(browserBootstrap.status, 200);
@@ -565,6 +577,48 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
         await new Promise((resolve) => authServer.once("exit", resolve));
       }
       await authAirtable.close();
+    }
+  });
+
+  await t.test("reports Airtable administrator-provisioning failures instead of blaming missing Railway variables", async () => {
+    const schema = SCHEMA.map((table) => table.name === T.users
+      ? { ...table, fields: table.fields.filter((field) => field.name !== "Password Hash") }
+      : table);
+    const brokenAirtable = createMockAirtable({ tables: schema, rows: templateRows() });
+    const apiRoot = await brokenAirtable.start();
+    const port = await availablePort();
+    const url = `http://127.0.0.1:${port}`;
+    const app = spawn(process.execPath, ["server.js"], {
+      cwd: projectRoot,
+      env: {
+        ...process.env, NODE_ENV: "production", NMU_AUTH_MODE: "required",
+        NMU_ADMIN_EMAIL: "initial-admin@nmu.test", NMU_ADMIN_PASSWORD: "test-admin-password-123",
+        ...airtableEnv(apiRoot), PORT: String(port)
+      },
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    try {
+      let response;
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (app.exitCode !== null) throw new Error("Server exited before the auth status endpoint became ready.");
+        try {
+          response = await fetch(`${url}/api/auth/config`);
+          if (response.ok) break;
+        } catch {}
+        await delay(100);
+      }
+      assert.equal(response?.status, 200);
+      const config = await response.json();
+      assert.equal(config.airtableConfigured, true);
+      assert.equal(config.administratorConfigured, false);
+      assert.match(config.administratorError, /Password Hash/);
+      assert.doesNotMatch(config.administratorError, /test-token/);
+    } finally {
+      if (app.exitCode === null) {
+        app.kill("SIGTERM");
+        await new Promise((resolve) => app.once("exit", resolve));
+      }
+      await brokenAirtable.close();
     }
   });
 
