@@ -154,6 +154,16 @@ function canEditTask(model, user, task) {
   return canManage(user) || (user.role === "program_manager" && canAccessProject(model, user, task.project_id))
     || (["employee", "external_partner"].includes(user.role) && isTaskOwner(task, user.id));
 }
+// Who gets a template step's task: a teammate linked to the step's Role in Airtable;
+// otherwise by app role (the program manager for manager steps).
+function resolveStepOwner(model, step, managerId) {
+  if (step.role_ids?.length) {
+    const match = model.users.filter((user) => user.is_active && user.role !== "external_partner" && user.role_ids.some((id) => step.role_ids.includes(id)))
+      .sort((a, b) => (a.id === managerId ? -1 : b.id === managerId ? 1 : a.name.localeCompare(b.name)))[0];
+    if (match) return match.id;
+  }
+  return resolveRoleAssignment(model, step.default_role, managerId);
+}
 function resolveRoleAssignment(model, role, managerId) {
   if (role === "program_manager") return managerId;
   if (role === "admin" || role === "employee") {
@@ -218,11 +228,11 @@ function taskResponse(model, task, viewer) {
 function projectResponse(model, project) {
   const tasks = model.tasks.filter((task) => task.project_id === project.id);
   const completed = tasks.filter((task) => task.status === "Completed").length;
-  const { city = "", state = "", deliveryType = "" } = project.details;
+  const { city = "", state = "", deliveryType = "", region = "" } = project.details;
   return {
     id: project.id, name: project.name, description: project.description, programType: project.program_type,
     location: project.location, hostOrganization: project.host_organization, startDate: project.start_date,
-    city, state, deliveryType,
+    city, state, deliveryType, region, siteId: project.site_id,
     endDate: project.end_date, status: project.status, projectManagerId: project.project_manager_id,
     projectManagerName: model.usersById.get(project.project_manager_id)?.name || null,
     progress: tasks.length ? Math.round(completed / tasks.length * 100) : 0,
@@ -237,7 +247,7 @@ function templateResponse(model, template, { full = true } = {}) {
     tasks: model.templateTasks.filter((step) => step.template_id === template.id).map((step) => ({
       id: step.id, title: step.title, description: step.description, relativeDueDays: step.relative_due_days,
       priority: step.priority, milestone: step.milestone,
-      ...(full ? { defaultRole: step.default_role, dependencyIndex: step.dependency_index } : {})
+      ...(full ? { defaultRole: step.default_role, roleName: step.role_name || "", dependencyIndex: step.dependency_index } : {})
     }))
   };
 }
@@ -425,6 +435,8 @@ async function handleApi(request, response, url) {
       projects: projects.map((project) => projectResponse(model, project)), tasks, notifications,
       templates: model.templates.map((template) => templateResponse(model, template)),
       integration: integrationStatus(),
+      sites: model.sites.map((site) => ({ id: site.id, label: site.label, name: site.name, location: site.location, city: site.city, state: site.state, region: site.region })),
+      regions: model.regions.map((region) => ({ id: region.id, name: region.name })),
       visibleProjectCount: projects.length
     });
   }
@@ -493,10 +505,16 @@ async function handleApi(request, response, url) {
   if (request.method === "POST" && path === "/api/projects") {
     if (user.role === "employee" || user.role === "external_partner") return send(response, 403, { error: "You do not have permission to create programs." });
     const input = await readBody(request);
-    const location = String(input.location || [input.city, input.state].filter(Boolean).join(", ")).trim();
+    // A program happens at a Site. Pick an existing one, or give city/state/host to add one.
+    const site = input.siteId ? model.sitesById.get(String(input.siteId)) : null;
+    if (input.siteId && !site) return send(response, 400, { error: "Choose a valid site." });
+    const location = site ? (site.location || site.region || site.label) : String(input.location || [input.city, input.state].filter(Boolean).join(", ")).trim();
+    const region = input.regionId ? model.regions.find((item) => item.id === String(input.regionId)) : null;
+    if (input.regionId && !region) return send(response, 400, { error: "Choose a valid region." });
     const endDate = String(input.endDate || input.startDate || "");
     if (["name", "programType", "projectManagerId"].some((key) => !String(input[key] || "").trim())) return send(response, 400, { error: "Complete all required project fields." });
-    if (!location) return send(response, 400, { error: "Enter a program city and state." });
+    if (!location) return send(response, 400, { error: "Choose a site, or enter a city and state for a new one." });
+    if (!site && !String(input.hostOrganization || "").trim()) return send(response, 400, { error: "Enter the host organization for the new site." });
     if (!validateDate(input.startDate) || !validateDate(endDate) || endDate < input.startDate) return send(response, 400, { error: "Enter valid program dates; the end date must be on or after the start date." });
     const manager = activeUser(model, input.projectManagerId);
     if (!manager || manager.role === "external_partner") return send(response, 400, { error: "Choose an internal employee as the project manager." });
@@ -510,23 +528,26 @@ async function handleApi(request, response, url) {
     const name = String(input.name).trim();
     const city = String(input.city || location.split(",")[0] || "").trim();
     const state = String(input.state || location.split(",").slice(1).join(",") || "").trim();
+    const leadInstructors = String(input.leadInstructors || "").trim();
     const details = {
+      deliveryType: String(input.deliveryType || ""), leadInstructors,
       primaryContact: input.primaryContact || "", contactEmail: input.contactEmail || "",
       shippingAddress: input.shippingAddress || "", participants: Number(input.participants || 0),
       instructorRequirements: input.instructorRequirements || "", volunteerRequirements: input.volunteerRequirements || "",
       specialRequirements: input.specialRequirements || "", notes: input.notes || "", creationMode
     };
+    const siteId = site?.id || await store.createSite({
+      name: String(input.hostOrganization).trim(), location: [city, state].filter(Boolean).join(", "), regionId: region?.id || null
+    });
     const projectId = await store.createProject({
-      name, description: String(input.description || ""), programType: input.programType,
-      deliveryType: String(input.deliveryType || ""), city, state, hostOrganization: String(input.hostOrganization || ""),
-      programHours, leadInstructors: String(input.leadInstructors || "").trim(),
+      name, description: String(input.description || ""), programType: input.programType, siteId, programHours,
       startDate: input.startDate, endDate, status: "Planning", managerId: manager.id,
       teamIds: user.id === manager.id ? [] : [user.id], templateId: template?.id || null, details
     });
     const steps = template ? model.templateTasks.filter((step) => step.template_id === template.id) : [];
     let taskIds = [];
     try {
-      const owners = steps.map((step) => resolveRoleAssignment(model, step.default_role, manager.id));
+      const owners = steps.map((step) => resolveStepOwner(model, step, manager.id));
       taskIds = await store.createTasks(steps.map((step, index) => ({
         projectId, stepId: step.id, title: step.title, description: step.description, ownerIds: [owners[index]],
         status: "Not Started", priority: step.priority, plannedDue: addDays(input.startDate, step.relative_due_days), milestone: step.milestone

@@ -28,16 +28,17 @@ Open http://localhost:3000. Never commit `.env` or paste a token anywhere else.
 
 | App concept | Airtable table | Notes |
 |---|---|---|
-| People and roles | `Users` | `Rights` = Admin / Program Manager / Employee / External Partner. Users with no Rights can't sign in. `Password Hash` holds a scrypt hash, never a password. `App Access Disabled` turns off sign-in. |
-| Templates | `Template List` + `Steps` | Step `Days` = days from program start; `Step Order`, `Priority`, `Milestone`, `Default Role`, `Depends On Step` (step number). |
-| Programs | `Session` | Dates, location, host, `Project Manager` and `Team` (links to Users), `Template`, plus `Details` (JSON for extra intake fields). |
+| People and roles | `Users` | `Rights` = Admin / Program Manager / Employee / External Partner. Users with no Rights, or `Status` Inactive, can't sign in. `Password Hash` holds a scrypt hash, never a password. `App Access Disabled` turns off sign-in. `Roles` (job roles) decide who gets template tasks. |
+| Templates | `Template List` + `Steps` | Step `Days` = days from program start, ordered by `Days` then `ID`. `Roles` picks the default owner (a teammate linked to that Role, else by Rights). `Dependencies` become task prerequisites. The app adds `Priority` and `Milestone`. Templates with an archived/inactive `Status` are hidden. |
+| Places | `Region`, `Site`, `Instructors` | A program's location (`Program Location`, "City, ST"), host (`Program Name`) and region come from its `Site`. Creating a program picks a Site, or adds a new one. |
+| Programs | `Session` | `Session Name` and `End Date` are the base's formulas; the app writes `Start Date` and `Duration (Days)` and lets the base compute them. The app adds `Program Type`, `Description`, `Project Manager`, `Team` and `Details` (JSON for extra intake fields). |
 | Tasks | `Work` | See below. |
-| Comments, activity, notifications | `Comments`, `Activity Log`, `Notifications` | Created by the app. |
+| Comments, activity, notifications | `Comments` (`Content`, `User`), `Activity Log`, `Notifications` (`Is Read`) | Created by the app. |
 | Files and links | `Resources` | `Kind` = Link or File. Links keep the `URL`; files go into the `File` attachment field (up to 5 MB each, Airtable's limit for direct uploads). `Session` links it to a program, `Work` to a single task. |
 
 `Templates ->`, `Programs ->` and `WIP ->` are divider tables and are not required.
 
-**Work fields.** The app reads `Task Status`, the due date (`Due Date Override`, then `Planned Due Date`, then the base's `Effective Due Date` and `Due Date` formulas) and `Assigned To`. It writes `Task Status`, `Due Date Override`, `Assigned To` and `Completed Date`, and the app-owned `Task Name`, `Description`, `Priority`, `Milestone`, `Planned Due Date` and `Prerequisites`. `Due Date`, `Status`, `Assignee` and `Effective Due Date` are formulas or lookups and are never written; the code refuses to. Work and Session records are never deleted (except a program whose creation fails half-way). Files and links in `Resources` are deleted when someone removes them in the app.
+**Work fields.** The app reads `Task Status`, the due date (`Due Date Override`, then `Planned Due Date`, then the base's `Effective Due Date` and `Due Date` formulas) and `Assigned To`. It writes `Task Status`, `Due Date Override`, `Assigned To` and `Completed Date`, and the app-owned `Task Name`, `Description`, `Priority`, `Milestone`, `Planned Due Date` and `Prerequisites`. When `Task Name` is empty the task is named by the base's `Unique` formula (the step's name). `Notes` is left alone. `Due Date`, `Status`, `Assignee` and `Effective Due Date` are formulas or lookups and are never written; the code refuses to. Work and Session records are never deleted (except a program whose creation fails half-way). Files and links in `Resources` are deleted when someone removes them in the app.
 
 `Planned Due Date` is the date the app calculates from the template. When a program's start date moves, open tasks' planned dates move with it; completed tasks and tasks with a `Due Date Override` keep their dates.
 

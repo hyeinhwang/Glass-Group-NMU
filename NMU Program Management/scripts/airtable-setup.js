@@ -23,7 +23,7 @@ export async function applySetup(client, log = console.log) {
   // Pass 1: create missing tables with their non-link fields (links need table IDs).
   for (const table of SCHEMA) {
     if (idOf(table.name)) continue;
-    const plain = table.fields.filter((field) => !field.link);
+    const plain = table.fields.filter((field) => !field.link && field.type !== "autoNumber");
     await client.createTable(table.name, plain.map(toApi));
     log(`created table ${table.name}`);
     live = await client.getSchema();
@@ -32,7 +32,8 @@ export async function applySetup(client, log = console.log) {
   for (const table of SCHEMA) {
     const liveTable = live.find((item) => item.name === table.name);
     for (const field of table.fields) {
-      if (liveTable.fields.some((item) => item.name === field.name)) continue;
+      // Fields marked readOnly belong to the base; the app never adds them.
+      if (field.readOnly || liveTable.fields.some((item) => item.name === field.name)) continue;
       await client.createField(liveTable.id, toApi(field));
       log(`created field ${table.name}.${field.name}`);
     }

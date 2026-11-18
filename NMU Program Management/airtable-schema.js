@@ -1,6 +1,9 @@
 // The Airtable tables and fields this app reads and writes. Airtable is the system
 // of record: there is no other database. Existing NMU tables (Users, Template List,
-// Steps, Session, Work) keep their names; the app adds the fields it needs.
+// Steps, Region, Site, Session, Instructors, Work, ...) keep their names and fields;
+// the app adds only the fields it needs that the base doesn't already have.
+// A program (Session) gets its location and host from its Site, and its region from
+// the Site's Region.
 //
 // `npm run airtable:setup` compares this list with the live base and (with --apply)
 // creates any missing table or field. Settings → "Check schema access" reports gaps.
@@ -14,11 +17,18 @@ const date = (name) => ({ name, type: "date", options: { dateFormat: { name: "is
 const checkbox = (name) => ({ name, type: "checkbox", options: { icon: "check", color: "greenBright" } });
 const select = (name, choices) => ({ name, type: "singleSelect", options: { choices: choices.map((choice) => ({ name: choice })) } });
 const link = (name, table) => ({ name, type: "multipleRecordLinks", link: table });
+// Fields the base already has and the app only reads: setup never creates them and
+// never reports them, whatever their type in the base.
+const existing = (field) => ({ ...field, readOnly: true });
 
 export const T = Object.freeze({
   users: "Users",
+  roles: "Roles",
   templates: "Template List",
   steps: "Steps",
+  regions: "Region",
+  sites: "Site",
+  instructors: "Instructors",
   sessions: "Session",
   work: "Work",
   comments: "Comments",
@@ -31,19 +41,28 @@ export const T = Object.freeze({
 export const F = Object.freeze({
   users: {
     email: "Email Address", firstName: "First Name", lastName: "Last Name",
-    rights: "Rights", passwordHash: "Password Hash", disabled: "App Access Disabled"
+    rights: "Rights", passwordHash: "Password Hash", disabled: "App Access Disabled",
+    status: "Status", roles: "Roles"
   },
-  templates: { name: "List Name (Unique)", deliveryType: "Program Type", description: "Description", steps: "Steps" },
+  templates: { name: "List Name (Unique)", deliveryType: "Program Type", description: "Description", steps: "Steps", status: "Status" },
   steps: {
     title: "Short Description", description: "Long Description", days: "Days", template: "Template",
-    defaultRole: "Default Role", priority: "Priority", milestone: "Milestone", order: "Step Order",
+    // Roles links to the base's Roles table; ID (auto number) orders the steps;
+    // Dependencies links a step to the steps that must finish first.
+    roles: "Roles", priority: "Priority", milestone: "Milestone", order: "ID",
     dependsOn: "Depends On Step", legacyDependencies: ["Dependencies", "Dependancies"]
   },
+  roles: { name: "Name" },
+  regions: { name: "Name" },
+  // "Region Site" is the base's formula label; Program Name is the host/venue name,
+  // Program Location is "City, ST".
+  sites: { label: "Region Site", name: "Program Name", location: "Program Location", region: "Region" },
+  instructors: { name: "Instructor Name", email: "Email" },
   sessions: {
-    name: "Session Name", startDate: "Start Date", endDate: "End Date", status: "Status",
-    programType: "Program Type", deliveryType: "Delivery Type", city: "City", state: "State",
-    host: "Host Organization", hours: "Program Hours", leadInstructors: "Lead Instructors",
-    description: "Description", manager: "Project Manager", team: "Team", template: "Template", details: "Details"
+    name: "Session Name", startDate: "Start Date", duration: "Duration (Days)", endDate: "End Date", status: "Status",
+    site: "Site", instructors: "Instructors", hours: "Program Hours",
+    programType: "Program Type", description: "Description", manager: "Project Manager", team: "Team",
+    template: "Template", details: "Details"
   },
   work: {
     title: "Task Name", description: "Description", session: "Session", step: "Steps",
@@ -53,9 +72,9 @@ export const F = Object.freeze({
     // Read-only formula/lookup fields in the NMU base. Never written.
     effectiveDue: "Effective Due Date", formulaDue: "Due Date"
   },
-  comments: { text: "Comment", work: "Work", author: "Author" },
+  comments: { text: "Content", work: "Work", author: "User" },
   activity: { action: "Action", details: "Details", session: "Session", work: "Work", user: "User" },
-  notifications: { message: "Message", user: "User", session: "Session", read: "Read" },
+  notifications: { message: "Message", user: "User", session: "Session", read: "Is Read" },
   // Links and uploaded files for a program (Session) or a single task (Work).
   resources: {
     title: "Title", kind: "Kind", url: "URL", file: "File", fileName: "File Name", size: "File Size",
@@ -84,23 +103,29 @@ export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // Airtable's limit for direct 
 
 // Full table definitions. The first field is the primary field for a new table.
 export const SCHEMA = [
+  { name: T.roles, fields: [existing(text(F.roles.name))] },
   { name: T.users, fields: [
     email(F.users.email), text(F.users.firstName), text(F.users.lastName),
-    select(F.users.rights, Object.values(RIGHTS)), text(F.users.passwordHash), checkbox(F.users.disabled)
+    select(F.users.rights, Object.values(RIGHTS)), text(F.users.passwordHash), checkbox(F.users.disabled),
+    existing(link(F.users.roles, T.roles))
   ] },
   { name: T.templates, fields: [
     text(F.templates.name), text(F.templates.deliveryType), longText(F.templates.description)
   ] },
   { name: T.steps, fields: [
     text(F.steps.title), longText(F.steps.description), number(F.steps.days), link(F.steps.template, T.templates),
-    select(F.steps.defaultRole, Object.values(RIGHTS).slice(0, 3)), select(F.steps.priority, PRIORITY_CHOICES),
-    text(F.steps.milestone), number(F.steps.order), number(F.steps.dependsOn)
+    existing(link(F.steps.roles, T.roles)), select(F.steps.priority, PRIORITY_CHOICES), text(F.steps.milestone),
+    existing({ name: F.steps.order, type: "autoNumber" }), existing(link(F.steps.legacyDependencies[0], T.steps))
   ] },
+  { name: T.regions, fields: [text(F.regions.name)] },
+  { name: T.sites, fields: [
+    existing(text(F.sites.label)), text(F.sites.name), text(F.sites.location), link(F.sites.region, T.regions)
+  ] },
+  { name: T.instructors, fields: [text(F.instructors.name), email(F.instructors.email)] },
   { name: T.sessions, fields: [
-    text(F.sessions.name), date(F.sessions.startDate), date(F.sessions.endDate),
-    select(F.sessions.status, PROGRAM_STATUS_CHOICES), text(F.sessions.programType), text(F.sessions.deliveryType),
-    text(F.sessions.city), text(F.sessions.state), text(F.sessions.host), decimal(F.sessions.hours),
-    text(F.sessions.leadInstructors), longText(F.sessions.description), link(F.sessions.manager, T.users),
+    text(F.sessions.name), date(F.sessions.startDate), number(F.sessions.duration), date(F.sessions.endDate),
+    select(F.sessions.status, PROGRAM_STATUS_CHOICES), link(F.sessions.site, T.sites), link(F.sessions.instructors, T.instructors),
+    text(F.sessions.hours), text(F.sessions.programType), longText(F.sessions.description), link(F.sessions.manager, T.users),
     link(F.sessions.team, T.users), link(F.sessions.template, T.templates), longText(F.sessions.details)
   ] },
   { name: T.work, fields: [
@@ -136,7 +161,7 @@ export const COMPUTED_TYPES = new Set([
 // Compares SCHEMA with a live schema (from the Metadata API).
 // Fields the app fills in only when they are plain fields. When the base computes
 // them with a formula (e.g. a generated Session Name), the app leaves them alone.
-export const COMPUTED_OK = Object.freeze(new Set([`${T.sessions}.${F.sessions.name}`, `${T.sessions}.${F.sessions.endDate}`]));
+export const COMPUTED_OK = Object.freeze(new Set([`${T.sessions}.${F.sessions.name}`, `${T.sessions}.${F.sessions.endDate}`, `${T.sites}.${F.sites.label}`]));
 
 export function compareSchema(liveTables) {
   const byName = new Map(liveTables.map((table) => [table.name, table]));
@@ -148,6 +173,7 @@ export function compareSchema(liveTables) {
     const live = byName.get(table.name);
     if (!live) { missingTables.push(table.name); continue; }
     for (const field of table.fields) {
+      if (field.readOnly) continue;
       const liveField = live.fields.find((item) => item.name === field.name);
       if (!liveField) missingFields.push(`${table.name}.${field.name}`);
       else if (COMPUTED_TYPES.has(liveField.type)) {
