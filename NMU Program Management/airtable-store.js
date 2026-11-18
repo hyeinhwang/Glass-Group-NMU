@@ -2,7 +2,7 @@
 // tables into plain objects shaped like the rows the server works with, and writes
 // every change straight back to Airtable through airtable-client.js.
 import {
-  T, F, WORK_READ_ONLY, WORK_WRITABLE, WORK_CREATE_ONLY, RIGHTS, COMPUTED_TYPES, compareSchema
+  T, F, WORK_READ_ONLY, WORK_WRITABLE, WORK_CREATE_ONLY, RIGHTS, COMPUTED_TYPES, COMPUTED_OK, compareSchema
 } from "./airtable-schema.js";
 
 // ---------------------------------------------------------------- value helpers
@@ -60,8 +60,11 @@ export function programStatusToApp(value) {
 }
 const ALIASES = {
   "not started": ["not started", "not begun", "to do", "todo", "open"],
-  "in progress": ["in progress", "started", "active"],
-  completed: ["completed", "complete", "done"],
+  "in progress": ["in progress", "started", "active", "doing", "working"],
+  completed: ["completed", "complete", "done", "finished"],
+  planning: ["planning", "planned", "upcoming", "scheduled", "not started", "pending"],
+  "on track": ["on track", "active", "in progress", "ongoing", "running"],
+  "at risk": ["at risk", "delayed", "behind", "blocked"],
   admin: ["admin", "administrator"],
   "program manager": ["program manager", "manager"],
   employee: ["employee", "contributor", "staff"],
@@ -123,7 +126,7 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   const invalidate = (...tables) => tables.forEach((table) => cache.delete(table));
   // Tables the app adds to the base. Until `airtable:setup` has created them the app
   // still works; it just has no comments, activity, notifications or resources yet.
-  const OPTIONAL = new Set([T.comments, T.activity, T.notifications, T.resources]);
+  const OPTIONAL = new Set([T.comments, T.activity, T.notifications, T.resources, T.regions, T.sites, T.instructors, T.roles]);
   const missingTables = new Set();
   const loadOptional = (table) => loadTable(table).then((records) => { missingTables.delete(table); return records; }, (error) => {
     if (!OPTIONAL.has(table) || ![403, 404].includes(error.status)) throw error;
@@ -161,7 +164,13 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   async function write(kind, table, records, options = {}) {
     if (!records.length) return [];
     if (table === T.work) assertWorkWriteFields(kind === "delete" ? [] : records, { creating: kind === "create" });
-    if (kind !== "delete") await assertWritable(table, fieldNames(records));
+    if (kind !== "delete") {
+      // Leave formula versions of optional fields (Session Name, End Date) to the base.
+      const live = (await schema()).find((item) => item.name === table);
+      const skip = new Set((live?.fields || []).filter((field) => COMPUTED_TYPES.has(field.type) && COMPUTED_OK.has(`${table}.${field.name}`)).map((field) => field.name));
+      if (skip.size) records = records.map((record) => ({ ...record, fields: Object.fromEntries(Object.entries(record.fields).filter(([name]) => !skip.has(name))) }));
+      await assertWritable(table, fieldNames(records));
+    }
     try {
       const result = kind === "create" ? await client.createRecords(table, records, { typecast: true, ...options })
         : kind === "update" ? await client.updateRecords(table, records, { typecast: true, ...options })
@@ -186,8 +195,14 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   // ------------------------------------------------------------ reading
 
   async function model() {
-    const [userRecords, templateRecords, stepRecords, sessionRecords, workRecords, commentRecords, activityRecords, notificationRecords, resourceRecords] =
-      await Promise.all([T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications, T.resources].map(loadOptional));
+    const [userRecords, templateRecords, stepRecords, sessionRecords, workRecords, commentRecords, activityRecords, notificationRecords, resourceRecords,
+      regionRecords, siteRecords, instructorRecords, roleRecords] =
+      await Promise.all([T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications, T.resources,
+        T.regions, T.sites, T.instructors, T.roles].map(loadOptional));
+    // Roles (job roles in the base): name from the table's primary field.
+    const rolesTable = roleRecords.length ? (await schema()).find((table) => table.name === T.roles) : null;
+    const rolePrimary = rolesTable?.fields.find((field) => field.id === rolesTable.primaryFieldId)?.name || F.roles.name;
+    const roleNames = new Map(roleRecords.map((record) => [record.id, textValue(record.fields?.[rolePrimary])]));
 
     const users = userRecords.map((record) => {
       const f = record.fields || {};
@@ -197,12 +212,13 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
         id: record.id, email, role,
         name: [textValue(f[F.users.firstName]), textValue(f[F.users.lastName])].filter(Boolean).join(" ") || email || record.id,
         password_hash: textValue(f[F.users.passwordHash]) || null,
-        is_active: Boolean(role) && !f[F.users.disabled]
+        role_ids: linkedIds(f[F.users.roles]),
+        is_active: Boolean(role) && !f[F.users.disabled] && !/inactive|disabled|former|archived/i.test(textValue(f[F.users.status]))
       };
     });
     const usersById = new Map(users.map((user) => [user.id, user]));
 
-    const templates = templateRecords.map((record) => ({
+    const templates = templateRecords.filter((record) => !/archiv|inactive|retired/i.test(textValue(record.fields?.[F.templates.status]))).map((record) => ({
       id: record.id,
       name: textValue(record.fields?.[F.templates.name]) || textValue(Object.values(record.fields || {})[0]) || record.id,
       program_type: textValue(record.fields?.[F.templates.deliveryType]) || "Community",
@@ -213,8 +229,8 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     for (const template of templates) {
       const listed = linkedIds(templateRecords.find((record) => record.id === template.id).fields?.[F.templates.steps]);
       const steps = stepRecords.filter((record) => linkedIds(record.fields?.[F.steps.template]).includes(template.id) || listed.includes(record.id));
-      steps.sort((a, b) => (numberValue(a.fields?.[F.steps.order]) ?? 1e9) - (numberValue(b.fields?.[F.steps.order]) ?? 1e9)
-        || (numberValue(a.fields?.[F.steps.days]) ?? 0) - (numberValue(b.fields?.[F.steps.days]) ?? 0)
+      steps.sort((a, b) => (numberValue(a.fields?.[F.steps.days]) ?? 0) - (numberValue(b.fields?.[F.steps.days]) ?? 0)
+        || (numberValue(a.fields?.[F.steps.order]) ?? 1e9) - (numberValue(b.fields?.[F.steps.order]) ?? 1e9)
         || String(a.createdTime).localeCompare(String(b.createdTime)));
       steps.forEach((record, index) => {
         const f = record.fields || {};
@@ -225,13 +241,36 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
           title: textValue(f[F.steps.title]) || textValue(f.Unique) || `Step ${index + 1}`,
           description: textValue(f[F.steps.description]),
           relative_due_days: numberValue(f[F.steps.days]) ?? 0,
-          default_role: ["admin", "employee"].includes(rightsToRole(f[F.steps.defaultRole])) ? rightsToRole(f[F.steps.defaultRole]) : "program_manager",
+          role_ids: linkedIds(f[F.steps.roles]),
+          role_name: linkedIds(f[F.steps.roles]).map((id) => roleNames.get(id)).filter(Boolean).join(", "),
+          default_role: (() => {
+            const mapped = linkedIds(f[F.steps.roles]).map((id) => rightsToRole(roleNames.get(id))).find(Boolean);
+            return ["admin", "employee"].includes(mapped) ? mapped : "program_manager";
+          })(),
           priority: ["High", "Medium", "Low"].find((level) => level.toLowerCase() === textValue(f[F.steps.priority]).toLowerCase()) || "Medium",
           milestone: textValue(f[F.steps.milestone]) || "Planning",
           dependency_index: numberValue(f[F.steps.dependsOn]) ?? (legacyIndex || null)
         });
       });
     }
+
+    const regions = regionRecords.map((record) => ({ id: record.id, name: textValue(record.fields?.[F.regions.name]) || record.id }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const regionsById = new Map(regions.map((region) => [region.id, region]));
+    const sites = siteRecords.map((record) => {
+      const f = record.fields || {};
+      const location = textValue(f[F.sites.location]);
+      const [city, ...rest] = location.split(",");
+      const regionId = linkedIds(f[F.sites.region])[0] || null;
+      const name = textValue(f[F.sites.name]);
+      return {
+        id: record.id, name, location, city: city.trim(), state: rest.join(",").trim(),
+        region_id: regionId, region: regionsById.get(regionId)?.name || "",
+        label: textValue(f[F.sites.label]) || [name, location].filter(Boolean).join(" · ") || record.id
+      };
+    }).sort((a, b) => a.label.localeCompare(b.label));
+    const sitesById = new Map(sites.map((site) => [site.id, site]));
+    const instructorsById = new Map(instructorRecords.map((record) => [record.id, textValue(record.fields?.[F.instructors.name])]));
 
     const projects = [];
     for (const record of sessionRecords) {
@@ -241,24 +280,28 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
       const end = dateValue(f[F.sessions.endDate]);
       let details = {};
       try { details = JSON.parse(textValue(f[F.sessions.details]) || "{}"); } catch { details = {}; }
-      const city = textValue(f[F.sessions.city]);
-      const state = textValue(f[F.sessions.state]);
+      const site = sitesById.get(linkedIds(f[F.sessions.site])[0]) || null;
+      const city = site?.city || textValue(details.city);
+      const state = site?.state || textValue(details.state);
       const hours = numberValue(f[F.sessions.hours]);
+      const instructorNames = linkedIds(f[F.sessions.instructors]).map((id) => instructorsById.get(id)).filter(Boolean);
       projects.push({
         id: record.id, name: textValue(f[F.sessions.name]) || `Session ${record.id}`,
         description: textValue(f[F.sessions.description]),
         program_type: textValue(f[F.sessions.programType]) || "Community",
-        location: [city, state].filter(Boolean).join(", ") || textValue(details.location) || "Location not set",
-        host_organization: textValue(f[F.sessions.host]),
+        location: site?.location || [city, state].filter(Boolean).join(", ") || site?.region || "Location not set",
+        host_organization: site?.name || textValue(details.hostOrganization),
+        site_id: site?.id || null, region: site?.region || "",
         start_date: start, end_date: end && end >= start ? end : start,
         status: programStatusToApp(f[F.sessions.status]),
         project_manager_id: linkedIds(f[F.sessions.manager])[0] || null,
         team_ids: linkedIds(f[F.sessions.team]),
         details: {
           ...details, city, state,
-          deliveryType: textValue(f[F.sessions.deliveryType]) || details.deliveryType || "",
+          deliveryType: details.deliveryType || "",
           programHours: hours ?? details.programHours ?? null,
-          leadInstructors: textValue(f[F.sessions.leadInstructors]) || details.leadInstructors || "",
+          leadInstructors: instructorNames.join(", ") || details.leadInstructors || "",
+          region: site?.region || "",
           sourceTemplateId: linkedIds(f[F.sessions.template])[0] || details.sourceTemplateId || null
         },
         created_at: record.createdTime
@@ -344,7 +387,7 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     const newestFirst = (a, b) => String(b.created_at).localeCompare(String(a.created_at));
     comments.sort(newestFirst); activities.sort(newestFirst); notifications.sort(newestFirst); resources.sort(newestFirst);
 
-    return { users, usersById, templates, templateTasks, projects, projectsById, tasks, tasksById, comments, activities, notifications, resources };
+    return { users, usersById, templates, templateTasks, projects, projectsById, tasks, tasksById, comments, activities, notifications, resources, regions, sites, sitesById };
   }
 
   // ------------------------------------------------------------ writing
@@ -366,15 +409,25 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     const fields = {};
     const set = (key, field, transform = (value) => value) => { if (input[key] !== undefined) fields[field] = transform(input[key]); };
     set("name", F.sessions.name); set("description", F.sessions.description);
-    set("programType", F.sessions.programType); set("deliveryType", F.sessions.deliveryType);
-    set("city", F.sessions.city); set("state", F.sessions.state); set("hostOrganization", F.sessions.host);
-    set("programHours", F.sessions.hours); set("leadInstructors", F.sessions.leadInstructors);
+    set("programType", F.sessions.programType);
+    set("programHours", F.sessions.hours, (value) => (value === null ? "" : String(value)));
+    set("siteId", F.sessions.site, (id) => (id ? [id] : []));
     set("startDate", F.sessions.startDate); set("endDate", F.sessions.endDate);
+    // The base's End Date formula is built from Start Date and Duration (Days).
+    if (input.startDate && input.endDate) {
+      fields[F.sessions.duration] = Math.round((Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`)) / 86400000);
+    }
     set("managerId", F.sessions.manager, (id) => (id ? [id] : []));
     set("teamIds", F.sessions.team, (ids) => [...new Set(ids)]);
     set("templateId", F.sessions.template, (id) => (id ? [id] : []));
     set("details", F.sessions.details, (value) => JSON.stringify(value));
-    if (input.status !== undefined) fields[F.sessions.status] = await choice(T.sessions, F.sessions.status, input.status);
+    if (input.status !== undefined) {
+      // Program status is a select the base owns; if it has no matching option, leave it unset.
+      const live = await liveField(T.sessions, F.sessions.status);
+      const value = await choice(T.sessions, F.sessions.status, input.status);
+      const known = !live || (live.choices || []).includes(Array.isArray(value) ? value[0] : value);
+      if (known) fields[F.sessions.status] = value;
+    }
     return fields;
   }
   async function taskFields(input) {
@@ -394,6 +447,11 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     return fields;
   }
 
+  async function createSite({ name, location, regionId }) {
+    const fields = { [F.sites.name]: name, [F.sites.location]: location };
+    if (regionId) fields[F.sites.region] = [regionId];
+    return (await create(T.sites, [{ fields }]))[0].id;
+  }
   async function createUser(input) { return (await create(T.users, [{ fields: await userFields(input) }]))[0].id; }
   async function updateUser(id, input) { await update(T.users, [{ id, fields: await userFields(input) }]); }
   async function createProject(input) { return (await create(T.sessions, [{ fields: await projectFields(input) }]))[0].id; }
@@ -504,6 +562,6 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
     client, schema, model, invalidate, loadTable, status, checkSchema, browseTable,
     createUser, updateUser, createProject, updateProject, createTasks, updateTasks, deleteRecords,
     addComment, logActivity, notify, markNotificationRead, updateTemplate, updateSteps,
-    addLink, addFile, freshFileUrl, removeResource
+    addLink, addFile, freshFileUrl, removeResource, createSite
   };
 }

@@ -85,9 +85,11 @@ const DEMO_PROGRAMS = [
 ];
 
 // Templates and their steps only (what a fresh production base needs).
+const ROLE_ROWS = [["role-program_manager", "Program Manager"], ["role-admin", "Admin"], ["role-employee", "Employee"]];
 export function templateRows() {
   const templates = [];
   const steps = [];
+  let stepNumber = 0;
   for (const template of DEMO_TEMPLATES) {
     templates.push({ id: template.id, fields: {
       [F.templates.name]: template.name, [F.templates.deliveryType]: template.programType,
@@ -96,13 +98,16 @@ export function templateRows() {
     template.steps.forEach(([title, description, days, role, priority, milestone, dependsOn], index) => {
       steps.push({ id: `${template.id}-step-${index + 1}`, fields: {
         [F.steps.title]: title, [F.steps.description]: description, [F.steps.days]: days,
-        [F.steps.template]: [template.id], [F.steps.defaultRole]: RIGHTS[role], [F.steps.priority]: priority,
-        [F.steps.milestone]: milestone, [F.steps.order]: index + 1,
-        ...(dependsOn ? { [F.steps.dependsOn]: dependsOn } : {})
+        [F.steps.template]: [template.id], [F.steps.roles]: [`role-${role}`], [F.steps.priority]: priority,
+        [F.steps.milestone]: milestone, [F.steps.order]: ++stepNumber,
+        ...(dependsOn ? { [F.steps.legacyDependencies[0]]: [`${template.id}-step-${dependsOn}`] } : {})
       } });
     });
   }
-  return { [T.templates]: templates, [T.steps]: steps };
+  return {
+    [T.roles]: ROLE_ROWS.map(([id, name]) => ({ id, fields: { [F.roles.name]: name } })),
+    [T.templates]: templates, [T.steps]: steps
+  };
 }
 
 // The full demo workspace: users, templates, six programs with tasks, comments,
@@ -115,6 +120,11 @@ export function demoRows({ today = new Date().toISOString().slice(0, 10), includ
     } }));
   }
   const roleOwner = { admin: "u-catalina", program_manager: null, employee: "u-casey" };
+  rows[T.regions] = [["region-wa", "Washington"], ["region-or", "Oregon"]].map(([id, name]) => ({ id, fields: { [F.regions.name]: name } }));
+  rows[T.sites] = DEMO_PROGRAMS.map((program) => ({ id: `site-${program.id}`, fields: {
+    [F.sites.label]: `${program.state} · ${program.host}`, [F.sites.name]: program.host,
+    [F.sites.location]: `${program.city}, ${program.state}`, [F.sites.region]: [program.state === "OR" ? "region-or" : "region-wa"]
+  } }));
   rows[T.sessions] = [];
   rows[T.work] = [];
   for (const [programIndex, program] of DEMO_PROGRAMS.entries()) {
@@ -123,8 +133,8 @@ export function demoRows({ today = new Date().toISOString().slice(0, 10), includ
     team.delete(program.manager);
     rows[T.sessions].push({ id: program.id, fields: {
       [F.sessions.name]: program.name, [F.sessions.description]: `${program.type} swim program with ${program.host}.`,
-      [F.sessions.programType]: program.type, [F.sessions.city]: program.city, [F.sessions.state]: program.state,
-      [F.sessions.host]: program.host, [F.sessions.startDate]: offsetDate(today, program.start),
+      [F.sessions.programType]: program.type, [F.sessions.site]: [`site-${program.id}`],
+      [F.sessions.duration]: program.end - program.start, [F.sessions.startDate]: offsetDate(today, program.start),
       [F.sessions.endDate]: offsetDate(today, program.end), [F.sessions.status]: program.status,
       [F.sessions.manager]: [program.manager], [F.sessions.team]: [...team], [F.sessions.template]: [program.template]
     } });
@@ -183,7 +193,9 @@ export function demoRows({ today = new Date().toISOString().slice(0, 10), includ
 // Writes seed rows into a base, replacing placeholder IDs in link fields with the
 // record IDs Airtable returns. Tables are written in dependency order.
 export async function insertSeed(client, rows, log = () => {}) {
-  const order = [T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications, T.resources];
+  const order = [T.roles, T.regions, T.sites, T.users, T.templates, T.steps, T.sessions, T.work, T.comments, T.activity, T.notifications, T.resources];
+  // Fields the base computes (auto numbers, formula labels) are not written.
+  const computed = new Set([F.steps.order, F.sites.label]);
   const idMap = new Map();
   const mapLinks = (fields) => Object.fromEntries(Object.entries(fields).map(([name, value]) => [name,
     Array.isArray(value) ? value.map((item) => idMap.get(item) || item) : value]));
@@ -191,10 +203,10 @@ export async function insertSeed(client, rows, log = () => {}) {
   for (const table of order) {
     const records = rows[table] || [];
     if (!records.length) continue;
-    // Self-links (Work.Prerequisites) wait until every record in the table exists.
-    const selfLink = table === T.work ? F.work.prerequisites : null;
+    // Self-links (Work.Prerequisites, Steps.Dependencies) wait until every record in the table exists.
+    const selfLink = table === T.work ? F.work.prerequisites : table === T.steps ? F.steps.legacyDependencies[0] : null;
     const created = await client.createRecords(table, records.map((record) => {
-      const fields = { ...record.fields };
+      const fields = Object.fromEntries(Object.entries(record.fields).filter(([name]) => !computed.has(name)));
       if (selfLink) delete fields[selfLink];
       return { fields: mapLinks(fields) };
     }), { typecast: true });

@@ -436,3 +436,4 @@ button.stat-card:hover { border-color: #b9bde6; box-shadow: 0 6px 18px rgba(44,4
   .link-form .form-field { flex-basis: 100%; }
   .export-list { width: min(340px, 86vw); }
 }
+#new-site-fields[hidden] { display: none; }

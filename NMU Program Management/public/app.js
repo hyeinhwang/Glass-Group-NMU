@@ -535,7 +535,7 @@ function renderProject(data) {
     const next = allowedTasks.filter((task)=>task.status!=="Completed").sort((a,b)=>a.dueDate.localeCompare(b.dueDate)).slice(0,4);
     pane = `<div class="detail-grid"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">Program details</h2><p class="panel-subtitle">Shared context for the team handoff</p></div></div><div class="detail-list">
       <div class="detail-item"><span>Program type</span><strong>${escapeHtml(project.programType)}</strong></div><div class="detail-item"><span>Delivery type</span><strong>${escapeHtml(project.deliveryType||"Not set")}</strong></div>
-      <div class="detail-item"><span>Host organization</span><strong>${escapeHtml(project.hostOrganization||"Not set")}</strong></div><div class="detail-item"><span>Location</span><strong>${escapeHtml([project.city,project.state].filter(Boolean).join(", ")||project.location)}</strong></div>
+      <div class="detail-item"><span>Host organization</span><strong>${escapeHtml(project.hostOrganization||"Not set")}</strong></div><div class="detail-item"><span>Location</span><strong>${escapeHtml([project.city,project.state].filter(Boolean).join(", ")||project.location)}</strong></div>${project.region?`<div class="detail-item"><span>Region</span><strong>${escapeHtml(project.region)}</strong></div>`:""}
       <div class="detail-item"><span>Start date</span><strong>${dateLabel(project.startDate)}</strong></div><div class="detail-item"><span>End date</span><strong>${dateLabel(project.endDate)}</strong></div>
       <div class="detail-item"><span>Project manager</span><strong>${escapeHtml(project.projectManagerName||"—")}</strong></div><div class="detail-item"><span>Progress</span><strong>${project.progress}% · ${project.completedCount}/${project.taskCount} tasks</strong></div>
       <div class="detail-item"><span>Program hours</span><strong>${project.details.programHours?escapeHtml(project.details.programHours):"Not provided"}</strong></div><div class="detail-item"><span>Lead instructor(s)</span><strong>${escapeHtml(project.details.leadInstructors||"Not provided")}</strong></div>
@@ -674,12 +674,19 @@ function showProjectForm() {
     item.programType.toLowerCase() === (deliveryType==="One-Time Clinic"?"Clinic":deliveryType).toLowerCase()
   ) || templates[0];
   const templateOptions = templates.map((item)=>[item.id,`${item.name} · ${item.programType}`]);
+  // Programs happen at a Site in Airtable (host + location, grouped by Region).
+  const sites = state.data.sites || [];
+  const regions = state.data.regions || [];
   modalRoot.innerHTML = `<div class="modal-backdrop" data-close-modal><section class="modal wide" role="dialog" aria-modal="true" aria-labelledby="project-modal-title"><header class="modal-head"><div><h2 id="project-modal-title">Create a program</h2><p>Choose a template, review the generated task plan, and create the project.</p></div><button class="modal-close" data-action="close-modal" aria-label="Close dialog">×</button></header><form id="project-form"><div class="modal-body"><div class="form-grid">
     ${formField("Program type","programType","select",{required:true,choices:[["Learn to Swim","Learn to Swim"],["Swim Safely Series","Swim Safely Series"]]})}
     ${formField("Delivery type","deliveryType","select",{required:true,choices:deliveryTypes,value:"Community"})}
-    ${formField("City","city","text",{required:true,placeholder:"e.g. Bellevue"})}
-    ${formField("State","state","text",{required:true,placeholder:"e.g. WA"})}
-    ${formField("Host organization","hostOrganization","text",{required:true,placeholder:"e.g. Bellevue YMCA"})}
+    ${formField("Site","siteId","select",{full:true,choices:[...sites.map((site)=>[site.id,[site.name||site.label,site.location].filter(Boolean).join(" · ")]),["","＋ New site…"]],value:sites[0]?.id||""})}
+    <div id="new-site-fields" class="form-grid full" style="grid-column:1/-1">
+    ${formField("Host organization","hostOrganization","text",{placeholder:"e.g. Bellevue YMCA"})}
+    ${formField("City","city","text",{placeholder:"e.g. Bellevue"})}
+    ${formField("State","state","text",{placeholder:"e.g. WA"})}
+    ${regions.length?formField("Region","regionId","select",{choices:[["","No region"],...regions.map((region)=>[region.id,region.name])]}):""}
+    </div>
     ${formField("Program name","name","text",{required:true,placeholder:"Generated from type, city, and host"})}
     ${formField("Program date","startDate","date",{required:true,value:startValue})}
     ${formField("Program hours","programHours","number",{step:"0.5",placeholder:"e.g. 24"})}
@@ -701,10 +708,12 @@ function showProjectForm() {
   </div><div class="preview-box" id="task-preview"></div></div><footer class="modal-actions"><button type="button" class="button ghost" data-action="close-modal">Cancel</button><button type="submit" class="button primary">Create program and tasks</button></footer></form></section></div>`;
   const form = modalRoot.querySelector("#project-form");
   const nameInput = form.elements.namedItem("name");
+  const selectedSite = () => sites.find((site)=>site.id===form.elements.siteId.value);
   const generatedName = () => {
     const type = form.elements.programType.value;
-    const city = form.elements.city.value.trim();
-    const host = form.elements.hostOrganization.value.trim();
+    const site = selectedSite();
+    const city = site ? site.city || site.location : form.elements.city.value.trim();
+    const host = site ? site.name : form.elements.hostOrganization.value.trim();
     if (!city) return "";
     return `${type} – ${city}${host ? ` ${host}` : ""}`;
   };
@@ -720,14 +729,18 @@ function showProjectForm() {
     const sampleTasks = form.elements.creationMode.value==="scratch" ? [] : templateTaskPreview(templateId);
     const startDate = document.getElementById("startDate").value;
     if (nameInput.dataset.userEdited!=="true") nameInput.value=generatedName();
-    form.elements.location.value=[form.elements.city.value.trim(),form.elements.state.value.trim()].filter(Boolean).join(", ");
+    const site = selectedSite();
+    const newSite = !site;
+    document.getElementById("new-site-fields").hidden = !newSite;
+    ["hostOrganization","city","state"].forEach((name)=>{ form.elements[name].required = newSite; });
+    form.elements.location.value = site ? site.location : [form.elements.city.value.trim(),form.elements.state.value.trim()].filter(Boolean).join(", ");
     form.elements.endDate.value=startDate;
     document.getElementById("task-preview").innerHTML = form.elements.creationMode.value==="scratch"
       ? `<h3>Start from scratch</h3><p>No tasks will be generated. You can create tasks from the new program workspace.</p>`
       : `<h3>Generated task preview · ${sampleTasks.length} tasks · ${escapeHtml(template?.name||"")}</h3>${sampleTasks.map(([title,offset])=>`<div class="preview-task"><span>${escapeHtml(title)}</span><span>${startDate?dateLabel(addDate(startDate,offset),{month:"short",day:"numeric"}):`${offset} days from start`}</span></div>`).join("")}`;
   };
   nameInput.addEventListener("input",()=>{nameInput.dataset.userEdited="true";});
-  form.addEventListener("input",(event)=>{if(["city","hostOrganization","programType"].includes(event.target.name)&&nameInput.dataset.userEdited!=="true")nameInput.value=generatedName();});
+  form.addEventListener("input",(event)=>{if(["city","hostOrganization","programType","siteId"].includes(event.target.name)&&nameInput.dataset.userEdited!=="true")nameInput.value=generatedName();});
   form.addEventListener("input",updatePreview);
   form.addEventListener("change",updatePreview);
   updatePreview();
