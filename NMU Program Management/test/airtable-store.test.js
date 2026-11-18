@@ -64,3 +64,23 @@ test("keeps working before the Resources table has been created", async () => {
     await base.close();
   }
 });
+
+test("leaves Session Name and End Date to the base when they are formulas", async () => {
+  const tables = SCHEMA.map((table) => table.name !== T.sessions ? table : { ...table, fields: table.fields.map((field) =>
+    ["Session Name", "End Date"].includes(field.name) ? { name: field.name, type: "formula" } : field) });
+  const base = createMockAirtable({ tables, rows: {} });
+  const apiRoot = await base.start();
+  try {
+    const store = createAirtableStore({ client: createAirtableClient({ apiKey: "test-token", baseId: "appMock", apiRoot, minIntervalMs: 0 }), cacheMs: 0 });
+    const check = await store.checkSchema();
+    assert.deepEqual(check.readOnlyConflicts, []);
+    assert.deepEqual(check.computedInBase, ["Session.Session Name", "Session.End Date"]);
+    const id = await store.createProject({ name: "Typed name", startDate: "2030-05-01", endDate: "2030-05-10", city: "Seattle" });
+    await store.updateProject(id, { startDate: "2030-05-08", endDate: "2030-05-17" });
+    const written = base.writes.filter((write) => write.table === T.sessions).flatMap((write) => write.records.flatMap((record) => Object.keys(record.fields)));
+    assert.ok(written.includes("Start Date") && written.includes("City"));
+    assert.ok(!written.includes("Session Name") && !written.includes("End Date"));
+  } finally {
+    await base.close();
+  }
+});

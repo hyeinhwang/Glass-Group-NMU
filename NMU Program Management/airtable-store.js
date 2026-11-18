@@ -2,7 +2,7 @@
 // tables into plain objects shaped like the rows the server works with, and writes
 // every change straight back to Airtable through airtable-client.js.
 import {
-  T, F, WORK_READ_ONLY, WORK_WRITABLE, WORK_CREATE_ONLY, RIGHTS, COMPUTED_TYPES, compareSchema
+  T, F, WORK_READ_ONLY, WORK_WRITABLE, WORK_CREATE_ONLY, RIGHTS, COMPUTED_TYPES, COMPUTED_OK, compareSchema
 } from "./airtable-schema.js";
 
 // ---------------------------------------------------------------- value helpers
@@ -161,7 +161,13 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   async function write(kind, table, records, options = {}) {
     if (!records.length) return [];
     if (table === T.work) assertWorkWriteFields(kind === "delete" ? [] : records, { creating: kind === "create" });
-    if (kind !== "delete") await assertWritable(table, fieldNames(records));
+    if (kind !== "delete") {
+      // Leave formula versions of optional fields (Session Name, End Date) to the base.
+      const live = (await schema()).find((item) => item.name === table);
+      const skip = new Set((live?.fields || []).filter((field) => COMPUTED_TYPES.has(field.type) && COMPUTED_OK.has(`${table}.${field.name}`)).map((field) => field.name));
+      if (skip.size) records = records.map((record) => ({ ...record, fields: Object.fromEntries(Object.entries(record.fields).filter(([name]) => !skip.has(name))) }));
+      await assertWritable(table, fieldNames(records));
+    }
     try {
       const result = kind === "create" ? await client.createRecords(table, records, { typecast: true, ...options })
         : kind === "update" ? await client.updateRecords(table, records, { typecast: true, ...options })

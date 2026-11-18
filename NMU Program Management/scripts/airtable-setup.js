@@ -46,12 +46,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const client = airtableClientFromEnv();
   const apply = process.argv.includes("--apply");
   try {
+    // --list: print every table and its fields (names and types only, no record data).
+    if (process.argv.includes("--list")) {
+      for (const table of await client.getSchema()) console.log(`\n${table.name}: ${table.fields.map((field) => `${field.name} (${field.type})`).join(", ")}`);
+      process.exit(0);
+    }
     const plan = await planSetup(client);
     const todo = plan.missingTables.length + plan.missingFields.length;
     console.log(`Missing tables: ${plan.missingTables.join(", ") || "none"}`);
     console.log(`Missing fields: ${plan.missingFields.join(", ") || "none"}`);
     if (plan.readOnlyConflicts.length) {
       console.log(`These exist but are formula/lookup fields the app needs to write: ${plan.readOnlyConflicts.join(", ")}`);
+    }
+    if (plan.computedInBase?.length) {
+      console.log(`Computed by the base, so the app will leave them alone (fine): ${plan.computedInBase.join(", ")}`);
     }
     if (!todo) console.log("The base already has everything the app needs.");
     else if (!apply) console.log("\nNothing changed. Run again with --apply to create them.");

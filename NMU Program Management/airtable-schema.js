@@ -134,19 +134,26 @@ export const COMPUTED_TYPES = new Set([
 ]);
 
 // Compares SCHEMA with a live schema (from the Metadata API).
+// Fields the app fills in only when they are plain fields. When the base computes
+// them with a formula (e.g. a generated Session Name), the app leaves them alone.
+export const COMPUTED_OK = Object.freeze(new Set([`${T.sessions}.${F.sessions.name}`, `${T.sessions}.${F.sessions.endDate}`]));
+
 export function compareSchema(liveTables) {
   const byName = new Map(liveTables.map((table) => [table.name, table]));
   const missingTables = [];
   const missingFields = [];
   const readOnlyConflicts = [];
+  const computedInBase = [];
   for (const table of SCHEMA) {
     const live = byName.get(table.name);
     if (!live) { missingTables.push(table.name); continue; }
     for (const field of table.fields) {
       const liveField = live.fields.find((item) => item.name === field.name);
       if (!liveField) missingFields.push(`${table.name}.${field.name}`);
-      else if (COMPUTED_TYPES.has(liveField.type)) readOnlyConflicts.push(`${table.name}.${field.name}`);
+      else if (COMPUTED_TYPES.has(liveField.type)) {
+        (COMPUTED_OK.has(`${table.name}.${field.name}`) ? computedInBase : readOnlyConflicts).push(`${table.name}.${field.name}`);
+      }
     }
   }
-  return { missingTables, missingFields, readOnlyConflicts };
+  return { missingTables, missingFields, readOnlyConflicts, computedInBase };
 }
