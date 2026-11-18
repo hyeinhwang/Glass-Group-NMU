@@ -11,6 +11,8 @@
     "start": "node --env-file-if-exists=.env server.js",
     "dev": "node --watch --env-file-if-exists=.env server.js",
     "test": "node --test test/*.test.js",
-    "airtable:setup": "node --env-file-if-exists=.env scripts/airtable-setup.js"
+    "airtable:setup": "node --env-file-if-exists=.env scripts/airtable-setup.js",
+    "airtable:seed": "node --env-file-if-exists=.env scripts/airtable-seed.js",
+    "dev:mock": "node scripts/dev-mock.js"
   }
 }

@@ -134,10 +134,10 @@ export function createAirtableStore({ client, cacheMs = 15_000, schemaCacheMs = 
   async function choice(table, field, value) {
     if (value === null || value === undefined) return value;
     const live = await liveField(table, field);
-    if (!live?.choices?.length) return value;
     const wanted = String(value).toLowerCase();
     const options = ALIASES[wanted] || [wanted];
-    return live.choices.find((item) => options.includes(item.toLowerCase())) || value;
+    const picked = live?.choices?.find((item) => options.includes(item.toLowerCase())) || value;
+    return live?.type === "multipleSelects" ? [picked] : picked;
   }
   async function assertWritable(table, names) {
     const live = (await schema()).find((item) => item.name === table);

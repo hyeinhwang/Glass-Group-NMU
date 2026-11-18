@@ -376,3 +376,10 @@ button.stat-card:hover { border-color: #b9bde6; box-shadow: 0 6px 18px rgba(44,4
 .owner-option:hover { background: var(--paper); }
 .owner-option input { width: 16px; height: 16px; accent-color: var(--deep); }
 .owner-lead { margin-left: auto; padding: 1px 7px; border-radius: 10px; background: var(--sky-soft); color: var(--deep); font-size: 10px; font-weight: 700; }
+/* Airtable sync status pill */
+.integration-status[data-sync="saving"] .status-dot { background: #3fbfef; animation: sync-pulse 1s ease-in-out infinite; }
+.integration-status[data-sync="error"] .status-dot { background: #e0605a; box-shadow: 0 0 0 4px rgba(224,96,90,.18); }
+.integration-status[data-sync="off"] .status-dot { background: #8d8fa8; box-shadow: 0 0 0 4px rgba(141,143,168,.15); }
+.integration-status[data-sync="error"] small { color: #f2a19c; }
+@keyframes sync-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .integration-status[data-sync="saving"] .status-dot { animation: none; } }
