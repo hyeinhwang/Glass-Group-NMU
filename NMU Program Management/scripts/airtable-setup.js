@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 // Creates the Airtable tables and fields this app needs (see airtable-schema.js).
 //
 //   npm run airtable:setup             # report only, changes nothing
@@ -40,7 +41,8 @@ export async function applySetup(client, log = console.log) {
   return compareSchema(live);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run only when called as a script. (Compare as file URLs: the folder name has spaces.)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const client = airtableClientFromEnv();
   const apply = process.argv.includes("--apply");
   try {
