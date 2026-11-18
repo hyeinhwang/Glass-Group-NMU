@@ -23,7 +23,8 @@ export const T = Object.freeze({
   work: "Work",
   comments: "Comments",
   activity: "Activity Log",
-  notifications: "Notifications"
+  notifications: "Notifications",
+  resources: "Resources"
 });
 
 // Field names, grouped by table. Change a name here if the base uses another one.
@@ -54,7 +55,12 @@ export const F = Object.freeze({
   },
   comments: { text: "Comment", work: "Work", author: "Author" },
   activity: { action: "Action", details: "Details", session: "Session", work: "Work", user: "User" },
-  notifications: { message: "Message", user: "User", session: "Session", read: "Read" }
+  notifications: { message: "Message", user: "User", session: "Session", read: "Read" },
+  // Links and uploaded files for a program (Session) or a single task (Work).
+  resources: {
+    title: "Title", kind: "Kind", url: "URL", file: "File", fileName: "File Name", size: "File Size",
+    contentType: "Content Type", session: "Session", work: "Work", addedBy: "Added By"
+  }
 });
 
 // Work fields that must never be written: formulas and lookups in the NMU base.
@@ -73,6 +79,8 @@ export const RIGHTS = Object.freeze({
 export const STATUS_CHOICES = ["Not Started", "In Progress", "Completed"];
 export const PRIORITY_CHOICES = ["High", "Medium", "Low"];
 export const PROGRAM_STATUS_CHOICES = ["Planning", "On Track", "At Risk", "Completed"];
+export const RESOURCE_KINDS = ["Link", "File"];
+export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // Airtable's limit for direct uploads
 
 // Full table definitions. The first field is the primary field for a new table.
 export const SCHEMA = [
@@ -109,6 +117,12 @@ export const SCHEMA = [
   { name: T.notifications, fields: [
     longText(F.notifications.message), link(F.notifications.user, T.users),
     link(F.notifications.session, T.sessions), checkbox(F.notifications.read)
+  ] },
+  { name: T.resources, fields: [
+    text(F.resources.title), select(F.resources.kind, RESOURCE_KINDS), { name: F.resources.url, type: "url" },
+    { name: F.resources.file, type: "multipleAttachments" }, text(F.resources.fileName), number(F.resources.size),
+    text(F.resources.contentType), link(F.resources.session, T.sessions), link(F.resources.work, T.work),
+    link(F.resources.addedBy, T.users)
   ] }
 ];
 

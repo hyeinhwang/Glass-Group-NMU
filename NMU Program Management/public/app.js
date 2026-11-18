@@ -209,7 +209,7 @@ function renderOverview() {
     </div>
     <div class="dashboard-grid">
       <section class="panel">
-        <div class="panel-head"><div><h2 class="panel-title">Programs</h2><p class="panel-subtitle">A snapshot of active and upcoming work</p></div><div class="panel-actions"><input class="search-input" data-filter="project-search" placeholder="Search programs…" value="${escapeHtml(state.projectSearch)}" aria-label="Search programs"><select class="filter-select" data-filter="project-status" aria-label="Filter by program status"><option value="all">All statuses</option>${["On Track","At Risk","Planning","Completed"].map((item) => `<option ${state.projectStatus===item?"selected":""}>${item}</option>`).join("")}</select></div></div>
+        <div class="panel-head"><div><h2 class="panel-title">Programs</h2><p class="panel-subtitle">A snapshot of active and upcoming work</p></div><div class="panel-actions"><input class="search-input" data-filter="project-search" placeholder="Search programs…" value="${escapeHtml(state.projectSearch)}" aria-label="Search programs"><select class="filter-select" data-filter="project-status" aria-label="Filter by program status"><option value="all">All statuses</option>${["On Track","At Risk","Planning","Completed"].map((item) => `<option ${state.projectStatus===item?"selected":""}>${item}</option>`).join("")}</select>${exportMenu()}</div></div>
         ${projectFiltersMarkup()}${projectTable(filteredProjects())}
       </section>
       <div class="right-stack">
@@ -250,7 +250,7 @@ function showStatList(kind) {
 function renderProjects() {
   const actions = isManager() ? `<button class="button primary" data-action="create-project">＋ Create program</button>` : "";
   return `${pageHeading("PROGRAMS", "All programs", "Search programs, review deadlines, and open a workspace to coordinate the team.", actions)}
-    <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Program portfolio</h2><p class="panel-subtitle">${state.data.projects.length} organization-wide programs · ${filteredProjects().length} shown</p></div><div class="panel-actions"><input class="search-input" data-filter="project-search" placeholder="Search programs…" value="${escapeHtml(state.projectSearch)}" aria-label="Search programs"><select class="filter-select" data-filter="project-status" aria-label="Filter by program status"><option value="all">All statuses</option>${["On Track","At Risk","Planning","Completed"].map((item) => `<option value="${item}" ${state.projectStatus===item?"selected":""}>${item}</option>`).join("")}</select></div></div>${projectFiltersMarkup()}${projectTable(filteredProjects())}</section>`;
+    <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Program portfolio</h2><p class="panel-subtitle">${state.data.projects.length} organization-wide programs · ${filteredProjects().length} shown</p></div><div class="panel-actions"><input class="search-input" data-filter="project-search" placeholder="Search programs…" value="${escapeHtml(state.projectSearch)}" aria-label="Search programs"><select class="filter-select" data-filter="project-status" aria-label="Filter by program status"><option value="all">All statuses</option>${["On Track","At Risk","Planning","Completed"].map((item) => `<option value="${item}" ${state.projectStatus===item?"selected":""}>${item}</option>`).join("")}</select>${exportMenu()}</div></div>${projectFiltersMarkup()}${projectTable(filteredProjects())}</section>`;
 }
 function taskRow(task, compact = false) {
   const overdue = isOverdue(task);
@@ -503,7 +503,7 @@ function renderSettings() {
     <section class="integration-panel"><div class="eyebrow">AIRTABLE · SYSTEM OF RECORD</div><h2>Live connection</h2>
       <p>There is no separate app database. Programs are <span class="code">Session</span> records, tasks are <span class="code">Work</span> records, templates are <span class="code">Template List</span> and <span class="code">Steps</span>, and people and roles come from <span class="code">Users</span> → <span class="code">Rights</span>. Comments, activity and notifications are stored in their own Airtable tables.</p>
       <div class="integration-callout ${connected?"":"warning"}">${connected?escapeHtml(syncSummary()):"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
-      <p><b>Work fields:</b> the app reads <span class="code">Task Status</span>, <span class="code">Effective Due Date</span> (then <span class="code">Due Date Override</span>, then <span class="code">Due Date</span>) and <span class="code">Assigned To</span>, and writes <span class="code">Task Status</span>, <span class="code">Due Date Override</span>, <span class="code">Assigned To</span> and <span class="code">Completed Date</span>, plus the task name, description, priority, planning phase, planned date and prerequisites. Formula and lookup fields (<span class="code">Due Date</span>, <span class="code">Status</span>, <span class="code">Assignee</span>) are never written. Nothing is deleted.</p>
+      <p><b>Work fields:</b> the app reads <span class="code">Task Status</span>, <span class="code">Effective Due Date</span> (then <span class="code">Due Date Override</span>, then <span class="code">Due Date</span>) and <span class="code">Assigned To</span>, and writes <span class="code">Task Status</span>, <span class="code">Due Date Override</span>, <span class="code">Assigned To</span> and <span class="code">Completed Date</span>, plus the task name, description, priority, planning phase, planned date and prerequisites. Formula and lookup fields (<span class="code">Due Date</span>, <span class="code">Status</span>, <span class="code">Assignee</span>) are never written, and Work and Session records are never deleted. Files and links live in the <span class="code">Resources</span> table.</p>
       <p><b>Access:</b> the server token needs <span class="code">schema.bases:read</span>, <span class="code">data.records:read</span> and <span class="code">data.records:write</span> on this base (plus <span class="code">schema.bases:write</span> once, to run <span class="code">npm run airtable:setup</span>). Keep it in Railway Variables; never put it in the browser or GitHub.</p>
       <div class="heading-actions"><button class="button ghost" data-action="airtable-check" ${connected?"":"disabled"}>Check tables and fields</button></div>
       ${check?`<div class="integration-callout ${check.missingTables.length||check.missingFields.length||check.readOnlyConflicts.length?"warning":""}" style="margin-top:14px">${check.missingTables.length||check.missingFields.length||check.readOnlyConflicts.length
@@ -516,7 +516,8 @@ function renderSettings() {
     ${!state.authRequired?`<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">DEMO IDENTITY</div><h2>Switch demonstration account</h2><p>Use the account menu in the top bar to preview management, program manager, employee, and partner experiences. This is demo identity switching, not production authentication.</p><div class="integration-callout warning">Demo identity switching is for local development only and must not be used for real operational data.</div></section>`:""}`;
 }
 function projectTabs() {
-  return `<nav class="project-tabs" aria-label="Program workspace sections">${["overview","tasks","timeline","team","activity"].map((tab)=>`<button class="project-tab ${state.projectTab===tab?"active":""}" data-project-tab="${tab}">${tab[0].toUpperCase()+tab.slice(1)}</button>`).join("")}</nav>`;
+  const resourceCount = state.projectData?.resources?.length || 0;
+  return `<nav class="project-tabs" aria-label="Program workspace sections">${["overview","tasks","timeline","team","activity","resources"].map((tab)=>`<button class="project-tab ${state.projectTab===tab?"active":""}" data-project-tab="${tab}">${tab[0].toUpperCase()+tab.slice(1)}${tab==="resources"&&resourceCount?` <span class="tab-count">${resourceCount}</span>`:""}</button>`).join("")}</nav>`;
 }
 function taskTable(tasks, projectId) {
   const external = userRole() === "external_partner";
@@ -547,6 +548,8 @@ function renderProject(data) {
     const grouped = new Map();
     for (const task of allowedTasks.slice().sort((a,b)=>a.dueDate.localeCompare(b.dueDate))) grouped.set(task.milestone,[...(grouped.get(task.milestone)||[]),task]);
     pane = `<section class="panel"><div class="panel-head"><div><h2 class="panel-title">Planning timeline</h2><p class="panel-subtitle">Tasks grouped by NMU planning phase</p></div></div>${[...grouped.entries()].map(([phase,items])=>`<div class="panel-head"><h3 class="panel-title">${escapeHtml(phase)}</h3><span class="muted">${items.length} tasks</span></div><div class="timeline-list">${items.map((task)=>`<div class="timeline-item ${isOverdue(task)?"overdue":""}"><time class="timeline-date">${dateLabel(task.dueDate,{month:"short",day:"numeric"})}</time><span class="timeline-marker"></span><div class="timeline-copy"><strong><button class="task-link" data-task="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button></strong><small>${escapeHtml(task.assigneeName||"Unassigned")} · ${task.isBlocked?"Blocked by prerequisite":task.status}</small></div></div>`).join("")}</div>`).join("")}</section>`;
+  } else if (state.projectTab === "resources") {
+    pane = renderResourcesTab(data);
   } else if (state.projectTab === "team") {
     const visibleMembers = userRole()==="external_partner"?members.filter((member)=>member.id===state.userId):members;
     pane = `<section class="panel"><div class="panel-head"><div><h2 class="panel-title">Program team</h2><p class="panel-subtitle">${visibleMembers.length} member${visibleMembers.length===1?"":"s"} · role and responsibilities</p></div></div><div class="table-wrap"><table class="task-table"><thead><tr><th>Team member</th><th>Role</th><th>Assigned tasks</th></tr></thead><tbody>${visibleMembers.map((member)=>`<tr><td><b>${escapeHtml(member.name)}</b><span class="secondary-cell">${escapeHtml(member.email)}</span></td><td>${escapeHtml(member.projectRole)}</td><td>${allowedTasks.filter((task)=>task.assignedUserId===member.id).length}</td></tr>`).join("")}</tbody></table></div></section>`;
@@ -644,6 +647,7 @@ async function openTask(taskId) {
       <div class="form-field"><label for="task-due-date">Due date${managerControls?" · management override":""}</label><input id="task-due-date" name="dueDate" type="${managerControls?"date":"text"}" ${managerControls?`value="${escapeHtml(fullTask.dueDate)}"`:`disabled value="${dateLabel(fullTask.dueDate)}"`}></div>${fullTask.canEdit?`<div class="form-field"><label for="task-priority">Priority</label><select id="task-priority" name="priority" data-original="${escapeHtml(fullTask.priority)}">${["High","Medium","Low"].map((level)=>`<option ${fullTask.priority===level?"selected":""}>${level}</option>`).join("")}</select></div>`:`<div class="form-field"><label>Priority</label><input disabled value="${escapeHtml(fullTask.priority)}"></div>`}
       ${fullTask.canEdit?`<div class="form-field full"><label for="task-description">Description</label><textarea id="task-description" name="description" maxlength="4000" placeholder="What needs to happen, and anything the owner should know" data-original="${escapeHtml(fullTask.description||"")}">${escapeHtml(fullTask.description||"")}</textarea></div>`:`<div class="form-field full"><label>Description</label><div class="integration-callout">${escapeHtml(fullTask.description||"No task description.")}</div></div>`}${dependencies}</div>
       ${isAdmin()&&fullTask.isBlocked?`<div class="form-field" style="margin-top:12px"><label for="override-reason">Administrator override reason · required to bypass prerequisites</label><textarea id="override-reason" name="overrideReason" maxlength="500" placeholder="Record why this task must be completed before its prerequisites."></textarea></div>`:""}
+      <div id="task-resources" data-project-id="${escapeHtml(projectData.project.id)}" data-task-id="${escapeHtml(taskId)}">${taskResourcesMarkup(projectData, fullTask)}</div>
       <div class="section-label">Task notes (${comments.length})</div>${comments.length?`<div class="comment-list">${comments.map((item)=>`<article class="comment"><strong>${escapeHtml(item.userName)} · ${dateLabel(item.createdAt,{month:"short",day:"numeric"})}</strong><p>${escapeHtml(item.content)}</p></article>`).join("")}</div>`:`<div class="form-hint" style="margin:0 0 9px">No notes yet. Add context for the next person who picks up this work.</div>`}
       <div class="form-field"><label for="task-comment">Add a note</label><textarea id="task-comment" name="comment" maxlength="2000" placeholder="Add an update or handoff note…"></textarea></div>
     </div><footer class="modal-actions"><button type="button" class="button ghost" data-action="close-modal">Cancel</button><button type="submit" class="button primary">Save updates</button></footer></form></section></div>`;
@@ -1084,3 +1088,215 @@ document.addEventListener("submit",async(event)=>{
 });
 document.addEventListener("keydown",(event)=>{ if(event.key==="Escape"&&modalRoot.innerHTML)modalRoot.innerHTML=""; });
 refresh();
+
+// ---------------------------------------------------------------- files & links
+// Stored in the Airtable "Resources" table: links as URLs, files as attachments.
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+function resourceBadge(resource) {
+  const name = (resource.fileName || "").toLowerCase();
+  const url = resource.url || "";
+  if (resource.kind === "Link") {
+    if (/drive\.google\.com/.test(url)) return ["DRIVE", "drive"];
+    if (/docs\.google\.com\/(spreadsheets|forms)/.test(url)) return ["SHEET", "sheet"];
+    if (/docs\.google\.com/.test(url)) return ["DOC", "doc"];
+    return ["LINK", "link"];
+  }
+  if (/\.pdf$/.test(name) || resource.contentType === "application/pdf") return ["PDF", "pdf"];
+  if (/\.(docx?|odt|rtf|txt)$/.test(name)) return ["DOC", "doc"];
+  if (/\.(xlsx?|csv|ods)$/.test(name)) return ["SHEET", "sheet"];
+  if (/\.(pptx?|key|odp)$/.test(name)) return ["SLIDES", "slides"];
+  if ((resource.contentType || "").startsWith("image/")) return ["IMG", "img"];
+  return ["FILE", "link"];
+}
+function resourceRow(resource, { showTask = false } = {}) {
+  const [label, tone] = resourceBadge(resource);
+  const href = resource.kind === "Link" ? resource.url : resource.downloadUrl;
+  const meta = [
+    showTask && resource.taskTitle ? `Task: ${resource.taskTitle}` : "",
+    resource.kind === "Link" ? resource.host : formatBytes(resource.size),
+    resource.addedBy, dateLabel(resource.createdAt, { month: "short", day: "numeric" })
+  ].filter(Boolean).map(escapeHtml).join(" · ");
+  const menu = resource.canRemove ? `<details class="resource-menu"><summary aria-label="More actions for ${escapeHtml(resource.title)}">···</summary><div class="resource-menu-list"><a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${resource.kind === "Link" ? "Open link" : "Download"}</a><button type="button" data-remove-resource="${escapeHtml(resource.id)}">Remove</button></div></details>` : "";
+  return `<div class="resource-row"><span class="resource-badge ${tone}">${label}</span><div class="resource-copy"><a class="resource-title" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(resource.title)}${resource.kind === "Link" ? ' <span aria-hidden="true">↗</span>' : ""}</a><small>${meta}</small></div>${menu}</div>`;
+}
+const maxUploadLabel = () => formatBytes(state.data?.integration?.maxUploadBytes || 5 * 1024 * 1024).replace(".0", "");
+function linkFormMarkup(scope) {
+  return `<div class="link-form" data-link-form="${scope}" hidden><div class="form-field"><label>Link title</label><input data-link-title maxlength="200" placeholder="e.g. Instructor recruiting tracker"></div><div class="form-field grow"><label>URL</label><input data-link-url type="url" placeholder="https://docs.google.com/…"></div><button type="button" class="button ghost" data-link-cancel>Cancel</button><button type="button" class="button primary" data-link-save>Save link</button></div>`;
+}
+function uploadInput(projectId, taskId = "") {
+  return `<input type="file" multiple hidden data-upload-input data-project-id="${escapeHtml(projectId)}" data-task-id="${escapeHtml(taskId)}">`;
+}
+function renderResourcesTab(data) {
+  const resources = data.resources || [];
+  const canAdd = userRole() !== "external_partner";
+  const programLinks = resources.filter((item) => !item.taskId && item.kind === "Link");
+  const programFiles = resources.filter((item) => !item.taskId && item.kind === "File");
+  const taskItems = resources.filter((item) => item.taskId);
+  const list = (items, empty) => items.length ? `<div class="resource-list">${items.map((item) => resourceRow(item)).join("")}</div>` : `<div class="empty-state small">${empty}</div>`;
+  return `<div class="resource-grid">
+    <section class="panel" data-resource-scope="program" data-project-id="${escapeHtml(data.project.id)}"><div class="panel-head"><div><h2 class="panel-title">Links</h2><p class="panel-subtitle">Google Drive folders, docs and websites</p></div>${canAdd ? `<button type="button" class="button small ghost" data-link-open>＋ Add link</button>` : ""}</div>${canAdd ? linkFormMarkup("program") : ""}${list(programLinks, "No links yet. Add the shared Drive folder or host documents.")}</section>
+    <section class="panel" data-resource-scope="program" data-project-id="${escapeHtml(data.project.id)}"><div class="panel-head"><div><h2 class="panel-title">Files</h2><p class="panel-subtitle">PDF, Word, Excel, images · up to ${maxUploadLabel()} each</p></div>${canAdd ? `<button type="button" class="button small primary" data-upload-open>Upload file</button>${uploadInput(data.project.id)}` : ""}</div>${list(programFiles, "No files yet.")}${canAdd ? `<div class="dropzone" data-dropzone data-project-id="${escapeHtml(data.project.id)}">Drag files here to upload</div>` : ""}</section>
+  </div>
+  <section class="panel" style="margin-top:13px"><div class="panel-head"><div><h2 class="panel-title">Attached to tasks in this program</h2><p class="panel-subtitle">Everything teammates added on individual tasks, in one place</p></div></div>${taskItems.length ? `<div class="resource-list">${taskItems.map((item) => resourceRow(item, { showTask: true })).join("")}</div>` : `<div class="empty-state small">Nothing attached to tasks yet. Open a task to add files or links.</div>`}</section>`;
+}
+function taskResourcesMarkup(projectData, task) {
+  const items = (projectData.resources || []).filter((item) => item.taskId === task.id);
+  const canAdd = task.canEdit || userRole() !== "external_partner";
+  return `<div class="resource-head"><div class="section-label">Files &amp; links · ${items.length}</div>${canAdd ? `<div class="resource-actions"><button type="button" class="button small ghost" data-link-open>＋ Add link</button><button type="button" class="button small primary" data-upload-open>Upload file</button>${uploadInput(projectData.project.id, task.id)}</div>` : ""}</div>
+    <div data-resource-scope="task" data-project-id="${escapeHtml(projectData.project.id)}" data-task-id="${escapeHtml(task.id)}">${canAdd ? linkFormMarkup("task") : ""}${items.length ? `<div class="resource-list boxed">${items.map((item) => resourceRow(item)).join("")}</div>` : `<div class="form-hint" style="margin:0 0 9px">No files or links yet${canAdd ? ` · files up to ${maxUploadLabel()}` : ""}.</div>`}</div>`;
+}
+// Reloads the program and redraws whichever views show its resources.
+async function reloadResources(projectId) {
+  const projectData = await api(`/api/projects/${encodeURIComponent(projectId)}`);
+  if (state.projectData?.project.id === projectId || state.projectId === projectId) {
+    state.projectData = projectData;
+    if (state.projectId === projectId && !modalRoot.children.length) renderProjectPage();
+    else if (state.projectId === projectId) {
+      const tabs = document.querySelector(".project-tabs");
+      if (tabs) tabs.outerHTML = projectTabs();
+      if (state.projectTab === "resources") document.querySelector(".project-content").innerHTML = renderResourcesTab(projectData);
+    }
+  }
+  const box = document.getElementById("task-resources");
+  if (box && box.dataset.projectId === projectId) {
+    const task = projectData.tasks.find((item) => item.id === box.dataset.taskId);
+    if (task) box.innerHTML = taskResourcesMarkup(projectData, task);
+  }
+}
+async function uploadFiles(files, projectId, taskId = "") {
+  const limit = state.data?.integration?.maxUploadBytes || 5 * 1024 * 1024;
+  let uploaded = 0;
+  for (const file of files) {
+    if (file.size > limit) { showToast(`${file.name} is larger than ${maxUploadLabel()}. Add it to Google Drive and share a link instead.`, true); continue; }
+    if (!file.size) { showToast(`${file.name} is empty.`, true); continue; }
+    try {
+      showToast(`Uploading ${file.name} to Airtable…`);
+      await api(`/api/projects/${encodeURIComponent(projectId)}/resources/files?${new URLSearchParams({ name: file.name, ...(taskId ? { taskId } : {}) })}`,
+        { method: "POST", body: file, headers: { "content-type": file.type || "application/octet-stream" } });
+      uploaded++;
+    } catch (error) { showToast(`${file.name}: ${error.message}`, true); }
+  }
+  if (uploaded) {
+    await reloadResources(projectId);
+    showToast(uploaded === 1 ? "File uploaded." : `${uploaded} files uploaded.`);
+  }
+}
+document.addEventListener("click", async (event) => {
+  const openLink = event.target.closest("[data-link-open]");
+  if (openLink) {
+    const container = openLink.closest("#task-resources") || openLink.closest(".panel");
+    const form = container?.querySelector("[data-link-form]");
+    if (form) { form.hidden = false; form.querySelector("[data-link-title]").focus(); }
+    return;
+  }
+  const cancel = event.target.closest("[data-link-cancel]");
+  if (cancel) { const form = cancel.closest("[data-link-form]"); form.hidden = true; form.querySelectorAll("input").forEach((input) => { input.value = ""; }); return; }
+  const save = event.target.closest("[data-link-save]");
+  if (save) { await saveLink(save.closest("[data-link-form]")); return; }
+  const upload = event.target.closest("[data-upload-open]");
+  if (upload) { (upload.closest("#task-resources") || upload.closest(".panel")).querySelector("[data-upload-input]")?.click(); return; }
+  const remove = event.target.closest("[data-remove-resource]");
+  if (remove) {
+    const projectId = remove.closest("[data-project-id]")?.dataset.projectId || state.projectData?.project.id;
+    if (!confirm("Remove this? It will also be deleted from Airtable.")) return;
+    try {
+      await api(`/api/resources/${encodeURIComponent(remove.dataset.removeResource)}`, { method: "DELETE" });
+      await reloadResources(projectId);
+      showToast("Removed.");
+    } catch (error) { showToast(error.message, true); }
+    return;
+  }
+  // Close any open ··· menu when clicking elsewhere.
+  document.querySelectorAll(".resource-menu[open], .export-menu[open]").forEach((menu) => { if (!menu.contains(event.target)) menu.open = false; });
+  const exportItem = event.target.closest("[data-export]");
+  if (exportItem) { exportCsv(exportItem.dataset.export); exportItem.closest("details").open = false; }
+});
+async function saveLink(form) {
+  const scope = form.closest("[data-resource-scope]");
+  const projectId = scope.dataset.projectId;
+  const taskId = scope.dataset.taskId || "";
+  const title = form.querySelector("[data-link-title]").value.trim();
+  const url = form.querySelector("[data-link-url]").value.trim();
+  if (!url) { showToast("Paste the link's web address.", true); form.querySelector("[data-link-url]").focus(); return; }
+  try {
+    await api(`/api/projects/${encodeURIComponent(projectId)}/resources/links${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ""}`,
+      { method: "POST", body: JSON.stringify({ title, url: /^https?:\/\//i.test(url) ? url : `https://${url}` }) });
+    await reloadResources(projectId);
+    showToast("Link saved.");
+  } catch (error) { showToast(error.message, true); }
+}
+document.addEventListener("keydown", (event) => {
+  // Enter in the link form saves the link instead of submitting the task form.
+  if (event.key === "Enter" && event.target.closest?.("[data-link-form]")) { event.preventDefault(); saveLink(event.target.closest("[data-link-form]")); }
+});
+document.addEventListener("change", (event) => {
+  const input = event.target.closest?.("[data-upload-input]");
+  if (!input || !input.files.length) return;
+  const files = [...input.files];
+  input.value = "";
+  uploadFiles(files, input.dataset.projectId, input.dataset.taskId);
+});
+document.addEventListener("dragover", (event) => {
+  const zone = event.target.closest?.("[data-dropzone]");
+  if (!zone) return;
+  event.preventDefault();
+  zone.classList.add("over");
+});
+document.addEventListener("dragleave", (event) => event.target.closest?.("[data-dropzone]")?.classList.remove("over"));
+document.addEventListener("drop", (event) => {
+  const zone = event.target.closest?.("[data-dropzone]");
+  if (!zone) return;
+  event.preventDefault();
+  zone.classList.remove("over");
+  if (event.dataTransfer?.files?.length) uploadFiles([...event.dataTransfer.files], zone.dataset.projectId);
+});
+
+// ---------------------------------------------------------------- CSV export
+function exportMenu() {
+  const count = filteredProjects().length;
+  return `<details class="export-menu"><summary class="button small ghost">⤓ Export</summary><div class="export-list" role="menu">
+    <button type="button" role="menuitem" data-export="programs"><span class="resource-badge sheet">CSV</span><span><b>Programs (${count}) · CSV</b><small>Uses your current search and filters. Opens in Excel or Google Sheets.</small></span></button>
+    <button type="button" role="menuitem" data-export="tasks"><span class="resource-badge sheet">CSV</span><span><b>All tasks in these programs · CSV</b><small>Task, owners, due date, priority, status, program.</small></span></button>
+  </div></details>`;
+}
+function csvCell(value) {
+  let text = value === null || value === undefined ? "" : String(value);
+  // Stop spreadsheet apps from running cell text as a formula.
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+function downloadCsv(filename, rows) {
+  const csv = "﻿" + rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+function exportCsv(kind) {
+  const projects = filteredProjects();
+  const today = new Date().toISOString().slice(0, 10);
+  if (kind === "programs") {
+    downloadCsv(`nmu-programs-${today}.csv`, [
+      ["Program", "Program type", "Delivery type", "City", "State", "Host organization", "Start date", "End date", "Status", "Project manager", "Progress %", "Tasks", "Completed tasks"],
+      ...projects.map((p) => [p.name, p.programType, p.deliveryType, p.city || locationParts(p.location).city, p.state || locationParts(p.location).state, p.hostOrganization, p.startDate, p.endDate, p.status, p.projectManagerName, p.progress, p.taskCount, p.completedCount])
+    ]);
+    showToast(`Exported ${projects.length} program${projects.length === 1 ? "" : "s"}.`);
+    return;
+  }
+  const ids = new Set(projects.map((p) => p.id));
+  const tasks = state.data.tasks.filter((task) => ids.has(task.projectId))
+    .sort((a, b) => (a.projectName || "").localeCompare(b.projectName || "") || a.dueDate.localeCompare(b.dueDate));
+  downloadCsv(`nmu-tasks-${today}.csv`, [
+    ["Program", "Task", "Planning phase", "Owners", "Due date", "Priority", "Status", "Completed date"],
+    ...tasks.map((t) => [t.projectName, t.title, t.milestone, t.assigneeName || "", t.dueDate, t.priority, t.isBlocked ? "Blocked" : t.status, (t.completedAt || "").slice(0, 10)])
+  ]);
+  showToast(`Exported ${tasks.length} task${tasks.length === 1 ? "" : "s"}.`);
+}

@@ -48,3 +48,19 @@ test("serves cached data while refreshing, and re-reads after its own writes", a
     await base.close();
   }
 });
+
+test("keeps working before the Resources table has been created", async () => {
+  const rows = demoRows();
+  delete rows[T.resources];
+  const base = createMockAirtable({ tables: SCHEMA.filter((table) => table.name !== T.resources), rows });
+  const apiRoot = await base.start();
+  try {
+    const store = createAirtableStore({ client: createAirtableClient({ apiKey: "test-token", baseId: "appMock", apiRoot, minIntervalMs: 0 }), cacheMs: 0 });
+    const model = await store.model();
+    assert.equal(model.projects.length, 6);
+    assert.deepEqual(model.resources, []);
+    assert.deepEqual(store.status().missingTables, [T.resources]);
+  } finally {
+    await base.close();
+  }
+});

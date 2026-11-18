@@ -33,10 +33,11 @@ Open http://localhost:3000. Never commit `.env` or paste a token anywhere else.
 | Programs | `Session` | Dates, location, host, `Project Manager` and `Team` (links to Users), `Template`, plus `Details` (JSON for extra intake fields). |
 | Tasks | `Work` | See below. |
 | Comments, activity, notifications | `Comments`, `Activity Log`, `Notifications` | Created by the app. |
+| Files and links | `Resources` | `Kind` = Link or File. Links keep the `URL`; files go into the `File` attachment field (up to 5 MB each, Airtable's limit for direct uploads). `Session` links it to a program, `Work` to a single task. |
 
 `Templates ->`, `Programs ->` and `WIP ->` are divider tables and are not required.
 
-**Work fields.** The app reads `Task Status`, the due date (`Due Date Override`, then `Planned Due Date`, then the base's `Effective Due Date` and `Due Date` formulas) and `Assigned To`. It writes `Task Status`, `Due Date Override`, `Assigned To` and `Completed Date`, and the app-owned `Task Name`, `Description`, `Priority`, `Milestone`, `Planned Due Date` and `Prerequisites`. `Due Date`, `Status`, `Assignee` and `Effective Due Date` are formulas or lookups and are never written; the code refuses to. Nothing is ever deleted, except that a program whose creation fails half-way is removed again.
+**Work fields.** The app reads `Task Status`, the due date (`Due Date Override`, then `Planned Due Date`, then the base's `Effective Due Date` and `Due Date` formulas) and `Assigned To`. It writes `Task Status`, `Due Date Override`, `Assigned To` and `Completed Date`, and the app-owned `Task Name`, `Description`, `Priority`, `Milestone`, `Planned Due Date` and `Prerequisites`. `Due Date`, `Status`, `Assignee` and `Effective Due Date` are formulas or lookups and are never written; the code refuses to. Work and Session records are never deleted (except a program whose creation fails half-way). Files and links in `Resources` are deleted when someone removes them in the app.
 
 `Planned Due Date` is the date the app calculates from the template. When a program's start date moves, open tasks' planned dates move with it; completed tasks and tasks with a `Due Date Override` keep their dates.
 
@@ -54,6 +55,14 @@ npm run airtable:seed -- --demo        # templates + demo people, programs and t
 ```
 
 All seeded people and programs are fictional.
+
+## Files, links and export
+
+- **Program → Resources tab:** program-wide links (Google Drive folders, docs, websites) and files, plus everything attached to the program's tasks in one list.
+- **Task details → Files & links:** add a link or upload files for one task.
+- Files are stored in Airtable. Downloads go through the app, which asks Airtable for a fresh file URL each time (Airtable's URLs expire after a few hours). For files over 5 MB, put them in Google Drive and add a link.
+- Internal teammates on a program can add files and links; external partners can only add them to their own tasks. The person who added an item, a program manager on the program, or an admin can remove it.
+- **Export** (Overview and Programs): *Programs · CSV* uses the current search and filters; *All tasks in these programs · CSV* lists every task in them. CSV files open in Excel or Google Sheets (File → Import). Direct "Open in Google Sheets" would need Google sign-in and isn't built.
 
 ## Roles
 
