@@ -4,7 +4,8 @@ const state = {
   projectFilters: { city: "all", state: "all", programType: "all", host: "all", manager: "all", dateFrom: "", dateTo: "", sort: "date-asc" },
   taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks", taskSort: "due-asc", authRequired: false,
   calendar: { view: "month", cursor: new Date().toISOString().slice(0, 10), programId: "all" },
-  administratorConfigured: false, accountUsers: [], airtableSync: null,
+  administratorConfigured: false, accountUsers: [], schemaCheck: null,
+  sync: { pending: 0, lastSavedAt: null, error: null, checkedAt: null, server: null },
   airtableData: { tables: [], selectedTableId: null, records: [], recordLabels: {}, total: 0, offset: 0, limit: 25, query: "", loading: false }
 };
 const content = document.getElementById("content");
@@ -38,11 +39,22 @@ function showToast(message, error = false) {
 async function api(path, options = {}) {
   const headers = { "content-type": "application/json", ...(options.headers || {}) };
   if (!state.authRequired) headers["x-demo-user"] = state.userId;
-  const response = await fetch(path, {
-    ...options,
-    credentials: "same-origin",
-    headers
-  });
+  // Every change is written straight to Airtable; the sync pill shows it happening.
+  const isWrite = options.method && options.method !== "GET" && !path.startsWith("/api/auth/");
+  if (isWrite) { state.sync.pending++; renderSyncStatus(); }
+  let response;
+  try {
+    response = await fetch(path, { ...options, credentials: "same-origin", headers });
+  } catch (error) {
+    if (isWrite) { state.sync.pending--; state.sync.error = "Could not reach the server."; renderSyncStatus(); }
+    throw error;
+  }
+  if (isWrite) {
+    state.sync.pending--;
+    if (response.ok) { state.sync.lastSavedAt = Date.now(); state.sync.error = null; }
+    else if (response.status >= 500) state.sync.error = "Last change was not saved to Airtable.";
+    renderSyncStatus();
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = body.prerequisites?.length
@@ -58,7 +70,9 @@ async function refresh() {
     state.authRequired = config.required;
     state.administratorConfigured = config.administratorConfigured;
     state.data = await api("/api/bootstrap");
-    if (state.authRequired) state.userId = state.data.currentUser.id;
+    state.userId = state.data.currentUser.id;
+    state.sync.server = state.data.integration;
+    state.sync.checkedAt = Date.now();
     state.accountUsers = state.authRequired && state.data.currentUser.role === "admin"
       ? (await api("/api/users")).users
       : [];
@@ -414,21 +428,21 @@ function airtableCellValue(value, recordLabels) {
   return String(value);
 }
 function renderAirtableData() {
-  if (!isAdmin()) return pageHeading("ADMINISTRATION", "Access denied", "Only administrators can inspect synchronized Airtable data.");
+  if (!isAdmin()) return pageHeading("ADMINISTRATION", "Access denied", "Only administrators can inspect Airtable data.");
   const data = state.airtableData;
   const selected = data.tables.find((table) => table.id === data.selectedTableId);
   const totalRecords = data.tables.reduce((sum, table) => sum + table.recordCount, 0);
   const recordTable = selected ? `<section class="panel airtable-record-panel">
-    <div class="panel-head"><div><h2 class="panel-title">${escapeHtml(selected.name)}</h2><p class="panel-subtitle">${data.total} matching of ${selected.recordCount} synced records · updated ${escapeHtml(new Date(selected.syncedAt).toLocaleString())}</p></div>
+    <div class="panel-head"><div><h2 class="panel-title">${escapeHtml(selected.name)}</h2><p class="panel-subtitle">${data.total} matching of ${selected.recordCount} records · read live from Airtable ${escapeHtml(new Date(selected.syncedAt||Date.now()).toLocaleTimeString())}</p></div>
       <form class="airtable-search-form" id="airtable-search-form"><input class="search-input" name="query" aria-label="Search Airtable records" placeholder="Search this table…" value="${escapeHtml(data.query)}"><button class="button small ghost" type="submit">Search</button></form>
     </div>
-    ${data.loading ? `<div class="empty-state"><span class="spinner"></span>Loading Airtable records…</div>` : data.records.length ? `<div class="table-wrap airtable-record-wrap"><table class="airtable-record-table"><thead><tr><th>Record ID</th>${selected.fields.map((field) => `<th>${escapeHtml(field.name)}<small>${escapeHtml(field.type)}</small></th>`).join("")}</tr></thead><tbody>${data.records.map((record) => `<tr><td class="airtable-record-id">${escapeHtml(record.id)}</td>${selected.fields.map((field) => `<td>${escapeHtml(airtableCellValue(record.fields[field.name],data.recordLabels))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><strong>${data.query?"No matching records":"No records in this table"}</strong>${data.query?"Try a different search.":"Run a sync to load records from Airtable."}</div>`}
+    ${data.loading ? `<div class="empty-state"><span class="spinner"></span>Loading Airtable records…</div>` : data.records.length ? `<div class="table-wrap airtable-record-wrap"><table class="airtable-record-table"><thead><tr><th>Record ID</th>${selected.fields.map((field) => `<th>${escapeHtml(field.name)}<small>${escapeHtml(field.type)}</small></th>`).join("")}</tr></thead><tbody>${data.records.map((record) => `<tr><td class="airtable-record-id">${escapeHtml(record.id)}</td>${selected.fields.map((field) => `<td>${escapeHtml(airtableCellValue(record.fields[field.name],data.recordLabels))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><strong>${data.query?"No matching records":"No records in this table"}</strong>${data.query?"Try a different search.":"This table is empty in Airtable."}</div>`}
     <div class="airtable-pagination"><span>Showing ${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit,data.total)} of ${data.total}</span><div><button class="button small ghost" data-airtable-page="${Math.max(0,data.offset-data.limit)}" ${data.offset===0||data.loading?"disabled":""}>Previous</button><button class="button small ghost" data-airtable-page="${data.offset+data.limit}" ${data.offset+data.limit>=data.total||data.loading?"disabled":""}>Next</button></div></div>
-  </section>` : `<section class="panel"><div class="empty-state"><strong>No Airtable tables synced yet</strong>Open Airtable integration settings and run a sync to load the base.</div></section>`;
-  return `${pageHeading("ADMINISTRATOR WORKSPACE", "Airtable data", "Browse every synchronized table and its linked records. This read-only view is available only to administrators.")}
-    <div class="stat-grid" aria-label="Airtable data summary">${statCard("Tables synced",data.tables.length,"All tables in the connected base","▧")}${statCard("Records available",totalRecords,"Read-only Airtable snapshots","▤")}${statCard("Latest sync",data.tables.length?new Date(Math.max(...data.tables.map((table)=>Date.parse(table.syncedAt)))).toLocaleDateString():"Not synced", "Most recent successful sync","◷")}${statCard("Programs in workspace",state.data.projects.length,"Sessions linked into NMU","▦")}</div>
+  </section>` : `<section class="panel"><div class="empty-state"><strong>No Airtable tables found</strong>Check the Airtable connection in Settings.</div></section>`;
+  return `${pageHeading("ADMINISTRATOR WORKSPACE", "Airtable data", "Browse every table in the connected base and its linked records, read live. This read-only view is available only to administrators.")}
+    <div class="stat-grid" aria-label="Airtable data summary">${statCard("Tables",data.tables.length,"All tables in the connected base","▧")}${statCard("Records",totalRecords,"Read live from Airtable","▤")}${statCard("Connection",syncState().label,"Data is read from Airtable, not copied","◷")}${statCard("Programs in workspace",state.data.projects.length,"Sessions linked into NMU","▦")}</div>
     <section class="panel airtable-table-picker"><div class="panel-head"><div><h2 class="panel-title">Base tables</h2><p class="panel-subtitle">Select a table to inspect its fields and records.</p></div><button class="button small ghost" data-action="airtable-refresh-data">↻ Refresh table list</button></div>
-      ${data.tables.length ? `<div class="airtable-table-chips">${data.tables.map((table)=>`<button class="airtable-table-chip ${table.id===data.selectedTableId?"selected":""}" data-airtable-table="${escapeHtml(table.id)}" aria-pressed="${table.id===data.selectedTableId}"><span>${escapeHtml(table.name)}</span><small>${table.recordCount} records</small></button>`).join("")}</div>` : `<div class="empty-state">${data.loading?"Loading synced tables…":"No synced tables yet. Run an Airtable sync from Settings."}</div>`}
+      ${data.tables.length ? `<div class="airtable-table-chips">${data.tables.map((table)=>`<button class="airtable-table-chip ${table.id===data.selectedTableId?"selected":""}" data-airtable-table="${escapeHtml(table.id)}" aria-pressed="${table.id===data.selectedTableId}"><span>${escapeHtml(table.name)}</span><small>${table.recordCount} records</small></button>`).join("")}</div>` : `<div class="empty-state">${data.loading?"Loading Airtable tables…":"No tables found. Check the Airtable connection in Settings."}</div>`}
     </section>
     ${recordTable}`;
 }
@@ -479,22 +493,22 @@ async function loadAirtableRecords(offset = state.airtableData.offset) {
 }
 function renderSettings() {
   const connected = state.data.integration.airtableConfigured;
-  const lastSync = state.data.integration.airtableLastSync;
-  const syncStatus = lastSync
-    ? `${state.data.integration.airtableTablesSynced} Airtable tables synced · ${new Date(lastSync).toLocaleString()}`
-    : "Airtable has not been synced to this workspace yet.";
+  const check = state.schemaCheck;
   const accountManager = state.authRequired && isAdmin() ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">TEAM ACCESS</div><h2>Manage team accounts</h2><p>Create individual accounts with the least-privilege role they need. Share temporary passwords privately; teammates can change their password after signing in.</p>
       <form id="create-user-form"><div class="form-grid">${formField("Full name","newUserName","text",{required:true})}${formField("Email address","newUserEmail","email",{required:true})}${formField("Role","newUserRole","select",{required:true,choices:[["employee","Employee"],["program_manager","Program Manager"],["admin","Administrator"],["external_partner","External Partner"]]})}${formField("Temporary password (12+ characters)","newUserPassword","password",{required:true,placeholder:"Share separately and privately"})}</div><button class="button primary" type="submit" style="margin-top:12px">Create account</button></form>
       <div class="table-wrap" style="margin-top:18px"><table class="project-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>${state.accountUsers.map((account)=>`<tr><td>${escapeHtml(account.name)}</td><td>${escapeHtml(account.email)}</td><td>${escapeHtml(account.role.replaceAll("_"," "))}</td><td>${account.active?"Active":"Disabled"}</td><td>${account.id===state.data.currentUser.id?"You":`<button class="text-action" data-account-toggle="${escapeHtml(account.id)}" data-active="${account.active?"false":"true"}">${account.active?"Disable":"Enable"}</button>`}</td></tr>`).join("")}</tbody></table></div>
     </section>` : "";
   const passwordSettings = state.authRequired ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">ACCOUNT SECURITY</div><h2>Change your password</h2><form id="change-password-form"><div class="form-grid">${formField("Current password","currentPassword","password",{required:true})}${formField("New password (12+ characters)","newPassword","password",{required:true})}${formField("Confirm new password","confirmPassword","password",{required:true})}</div><button class="button primary" type="submit" style="margin-top:12px">Update password</button></form></section>` : "";
-  const airtableSettings = isAdmin() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable integration", "Sync the linked NMU base into the workspace and send approved Work updates back to Airtable.")}
-    <section class="integration-panel"><div class="eyebrow">AIRTABLE · LINKED TABLE SYNC</div><h2>Synchronize NMU data</h2><p>Sync imports and snapshots every table in the connected base, preserving Airtable record IDs and linked fields. Sessions appear as programs and linked Work records appear as tasks; other tables are available in the administrator-only Airtable data browser.</p>
-      <div class="integration-callout ${connected?"":"warning"}">${connected?escapeHtml(syncStatus):"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
-      <p><b>Ownership:</b> Airtable owns reference and setup data. The app writes only <span class="code">Status</span>, <span class="code">Due Date</span>, <span class="code">Completed Date</span>, and <span class="code">Assignee</span> on already-linked <span class="code">Work</span> rows. Other Work fields and linked/reference tables are read-only to the app. No records are automatically deleted, and simultaneous edits are reported as conflicts rather than overwritten.</p>
-      <p><b>Access:</b> the server token needs <span class="code">schema.bases:read</span>, <span class="code">data.records:read</span>, and <span class="code">data.records:write</span> access to this base. Keep it in Railway Variables; never put it in the browser or GitHub.</p>
-      <div class="heading-actions"><button class="button ghost" data-action="airtable-check" ${connected?"":"disabled"}>Check schema access</button><button class="button primary" data-action="airtable-sync" ${connected?"":"disabled"}>↻ Sync all Airtable tables</button></div>
-      ${state.airtableSync?`<div class="integration-callout ${state.airtableSync.conflicts?.length?"warning":""}" style="margin-top:14px">Last sync: ${Object.values(state.airtableSync.tables||{}).reduce((sum,count)=>sum+count,0)} records across ${Object.keys(state.airtableSync.tables||{}).length} tables; ${state.airtableSync.updatedWorkRecords||0} Work records written to Airtable; ${state.airtableSync.conflicts?.length||0} conflicts need review.</div>${state.airtableSync.conflicts?.length?`<ul>${state.airtableSync.conflicts.map((item)=>`<li>${escapeHtml(item.recordId)} · ${escapeHtml(item.field)} differs between the app (${escapeHtml(item.local)}) and Airtable (${escapeHtml(item.airtable)}).</li>`).join("")}</ul>`:""}`:""}
+  const airtableSettings = isAdmin() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable connection", "Airtable is the system of record. Every screen reads it live and every change is saved straight to it.")}
+    <section class="integration-panel"><div class="eyebrow">AIRTABLE · SYSTEM OF RECORD</div><h2>Live connection</h2>
+      <p>There is no separate app database. Programs are <span class="code">Session</span> records, tasks are <span class="code">Work</span> records, templates are <span class="code">Template List</span> and <span class="code">Steps</span>, and people and roles come from <span class="code">Users</span> → <span class="code">Rights</span>. Comments, activity and notifications are stored in their own Airtable tables.</p>
+      <div class="integration-callout ${connected?"":"warning"}">${connected?escapeHtml(syncSummary()):"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
+      <p><b>Work fields:</b> the app reads <span class="code">Task Status</span>, <span class="code">Effective Due Date</span> (then <span class="code">Due Date Override</span>, then <span class="code">Due Date</span>) and <span class="code">Assigned To</span>, and writes <span class="code">Task Status</span>, <span class="code">Due Date Override</span>, <span class="code">Assigned To</span> and <span class="code">Completed Date</span>, plus the task name, description, priority, planning phase, planned date and prerequisites. Formula and lookup fields (<span class="code">Due Date</span>, <span class="code">Status</span>, <span class="code">Assignee</span>) are never written. Nothing is deleted.</p>
+      <p><b>Access:</b> the server token needs <span class="code">schema.bases:read</span>, <span class="code">data.records:read</span> and <span class="code">data.records:write</span> on this base (plus <span class="code">schema.bases:write</span> once, to run <span class="code">npm run airtable:setup</span>). Keep it in Railway Variables; never put it in the browser or GitHub.</p>
+      <div class="heading-actions"><button class="button ghost" data-action="airtable-check" ${connected?"":"disabled"}>Check tables and fields</button></div>
+      ${check?`<div class="integration-callout ${check.missingTables.length||check.missingFields.length||check.readOnlyConflicts.length?"warning":""}" style="margin-top:14px">${check.missingTables.length||check.missingFields.length||check.readOnlyConflicts.length
+        ?`${check.missingTables.length?`Missing tables: ${escapeHtml(check.missingTables.join(", "))}. `:""}${check.missingFields.length?`Missing fields: ${escapeHtml(check.missingFields.join(", "))}. `:""}${check.readOnlyConflicts.length?`These fields are formulas or lookups in Airtable, so the app can't write them: ${escapeHtml(check.readOnlyConflicts.join(", "))}. `:""}Run <span class="code">npm run airtable:setup -- --apply</span> to add what is missing.`
+        :`All ${check.tables.length} tables are reachable and every field the app uses is present.`}</div>`:""}
     </section>` : pageHeading("ACCOUNT SETTINGS", "Your account", "Manage your sign-in details.");
   return `${airtableSettings}
     ${accountManager}
@@ -595,13 +609,9 @@ function render() {
   const unread = state.data.notifications.filter((item)=>!item.isRead).length;
   document.getElementById("notification-count").textContent = unread;
   document.getElementById("notification-indicator").classList.toggle("hidden",!unread);
-  const integration = document.querySelector(".integration-status");
-  integration.classList.toggle("connected",state.data.integration.airtableConfigured);
   document.getElementById("airtable-data-nav").hidden = !isAdmin();
   document.getElementById("mobile-airtable-data-nav").hidden = !isAdmin();
-  document.getElementById("airtable-status").textContent = state.data.integration.airtableLastSync
-    ? "Synced"
-    : state.data.integration.airtableConfigured ? "Configured" : "Not connected";
+  renderSyncStatus();
   document.getElementById("crumb-current").textContent = state.page.replaceAll("-"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase());
   document.querySelectorAll(".nav-link").forEach((item)=>item.classList.toggle("active",item.dataset.nav===state.page&&!state.projectId));
   if (state.projectId && state.projectData) return renderProjectPage();
@@ -760,22 +770,68 @@ async function checkAirtableSchema(button) {
   button.disabled = true;
   button.textContent = "Checking…";
   try {
-    const result = await api("/api/integrations/airtable/schema");
-    if(result.missingTables.length) showToast(`Schema access works, but these tables are missing: ${result.missingTables.join(", ")}.`,true);
-    else showToast(`Airtable schema access verified: ${result.tables.length} tables found.`);
+    state.schemaCheck = await api("/api/integrations/airtable/schema");
+    render();
   } catch(error) { showToast(error.message,true); }
-  finally { if(button.isConnected){button.disabled=false;button.textContent="Check schema access";} }
+  finally { if(button.isConnected){button.disabled=false;button.textContent="Check tables and fields";} }
 }
-async function syncAirtable(button) {
-  button.disabled = true;
-  button.textContent = "Syncing…";
+// ---- Sync status: the small pill in the sidebar.
+function agoText(time) {
+  if (!time) return "";
+  const seconds = Math.max(0, Math.round((Date.now() - time) / 1000));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `${minutes} min ago` : new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+function syncState() {
+  const server = state.sync.server || state.data?.integration;
+  if (!server?.airtableConfigured) return { tone: "off", label: "Not connected", detail: "Airtable credentials are missing on the server." };
+  if (state.sync.pending) return { tone: "saving", label: "Saving…", detail: "Writing your change to Airtable." };
+  if (state.sync.error) return { tone: "error", label: "Save failed", detail: state.sync.error };
+  if (server.recentFailures?.length && Date.now() - Date.parse(server.recentFailures[0].at) < 5 * 60 * 1000) {
+    return { tone: "error", label: "Airtable error", detail: server.recentFailures[0].message };
+  }
+  const saved = state.sync.lastSavedAt ? ` · saved ${agoText(state.sync.lastSavedAt)}` : "";
+  return { tone: "live", label: `Live · ${agoText(state.sync.checkedAt)}`, detail: `Reading Airtable live; refreshes every ${server.refreshSeconds || 15}s${saved}.` };
+}
+function syncSummary() {
+  const status = syncState();
+  const server = state.sync.server || state.data.integration;
+  const write = server.lastWrite ? ` Last write: ${server.lastWrite.kind} ${server.lastWrite.count} ${server.lastWrite.table} record(s) at ${new Date(server.lastWrite.at).toLocaleTimeString()}.` : "";
+  return `${status.label}. ${status.detail}${write}`;
+}
+function renderSyncStatus() {
+  const pill = document.querySelector(".integration-status");
+  if (!pill || !state.data) return;
+  const status = syncState();
+  pill.dataset.sync = status.tone;
+  pill.classList.toggle("connected", status.tone === "live");
+  pill.title = status.detail;
+  document.getElementById("airtable-status").textContent = status.label;
+}
+// Pull fresh data from Airtable in the background so other people's changes appear.
+async function backgroundRefresh() {
+  if (!state.data || document.hidden || state.sync.pending) return;
+  const busy = modalRoot.children.length || document.activeElement?.matches?.("input,textarea,select");
   try {
-    state.airtableSync = await api("/api/integrations/airtable/sync",{method:"POST",body:"{}"});
-    await refresh();
-    showToast(`Airtable sync complete: ${Object.keys(state.airtableSync.tables).length} tables; ${state.airtableSync.updatedWorkRecords} Work updates written; ${state.airtableSync.conflicts.length} conflicts.`);
-  } catch(error) { showToast(error.message,true); }
-  finally { if(button.isConnected){button.disabled=false;button.textContent="↻ Sync all Airtable tables";} }
+    const data = await api("/api/bootstrap");
+    state.sync.server = data.integration;
+    state.sync.checkedAt = Date.now();
+    if (!busy && JSON.stringify(data) !== JSON.stringify(state.data)) {
+      state.data = data;
+      const scroll = window.scrollY;
+      render();
+      window.scrollTo(0, scroll);
+    }
+  } catch (error) {
+    state.sync.error = error.message;
+  }
+  renderSyncStatus();
 }
+setInterval(backgroundRefresh, 30_000);
+setInterval(renderSyncStatus, 5_000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) backgroundRefresh(); });
 document.addEventListener("click",async(event)=>{
   const nav = event.target.closest("[data-nav]");
   if (nav) { event.preventDefault(); setNavigation(nav.dataset.nav); return; }
@@ -847,7 +903,6 @@ document.addEventListener("click",async(event)=>{
     }
     else if (action.dataset.action==="close-modal") modalRoot.innerHTML="";
     else if (action.dataset.action==="airtable-check") await checkAirtableSchema(action);
-    else if (action.dataset.action==="airtable-sync") await syncAirtable(action);
     else if (action.dataset.action==="airtable-refresh-data") await loadAirtableTables();
     else if (action.dataset.action==="mark-all-read") {
       for (const notification of state.data.notifications.filter((item)=>!item.isRead)) {
