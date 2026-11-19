@@ -437,3 +437,75 @@ button.stat-card:hover { border-color: #b9bde6; box-shadow: 0 6px 18px rgba(44,4
   .export-list { width: min(340px, 86vw); }
 }
 #new-site-fields[hidden] { display: none; }
+
+/* ===== Design pass (Impeccable-style): fewer boxes and ornaments, clearer type ===== */
+:root { --line: #e6e8f0; --muted: #5d6283; --faint: #8a8ea8; }
+body { font-size: 14px; }
+/* Headings carry the page; no eyebrow chips, bigger and tighter titles. */
+.page-heading { align-items: flex-end; margin-bottom: 28px; }
+h1 { font-size: 30px; letter-spacing: -1px; margin-bottom: 6px; }
+.heading-copy { font-size: 14px; line-height: 1.55; }
+/* Buttons: no lift-and-shadow on hover, just a colour change. */
+.button { min-height: 38px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background .15s ease, border-color .15s ease; }
+.button:hover { transform: none; box-shadow: none; background: #f1f2f8; }
+.button.primary:hover { background: #232870; }
+.button.ghost { background: white; border-color: #d9dbe7; }
+.button.small { min-height: 32px; font-size: 12px; }
+/* Stats: one quiet band split by rules instead of four bordered cards with icon tiles. */
+.stat-grid { gap: 0; margin-bottom: 32px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.stat-card, button.stat-card { min-height: 0; padding: 18px 20px 18px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.stat-card + .stat-card { padding-left: 20px; border-left: 1px solid var(--line); }
+button.stat-card:hover { border-color: var(--line); box-shadow: none; background: transparent; }
+button.stat-card:hover .stat-more { text-decoration: underline; }
+.stat-top { color: var(--muted); font-size: 13px; font-weight: 500; }
+.stat-value { margin-top: 8px; font-size: 34px; letter-spacing: -1.2px; }
+.stat-card.red .stat-value { color: var(--red); }
+.stat-foot { margin-top: 6px; color: var(--faint); font-size: 12px; }
+/* Panels: hairline border only, no shadow; more breathing room. */
+.panel { border-radius: 10px; box-shadow: none; }
+.panel-head { min-height: 64px; padding: 14px 20px; }
+.panel-title { font-size: 16px; }
+.panel-subtitle { margin-top: 3px; color: var(--faint); font-size: 12.5px; }
+.search-input, .filter-select { height: 36px; border-radius: 8px; font-size: 13px; }
+/* Tables: readable sizes; sentence-case headers instead of tiny caps. */
+.project-table th, .task-table th { padding: 12px 20px; color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.project-table td, .task-table td { padding: 15px 20px; color: #4a4e70; font-size: 13px; }
+.project-table td strong, .project-table .project-name { font-size: 14px; }
+.project-table small, .task-table small { font-size: 12px; }
+.badge { min-height: 24px; padding: 3px 10px; font-size: 12px; font-weight: 600; }
+.badge::before { display: none; }
+.section-label { color: var(--muted); font-size: 12px; letter-spacing: .2px; text-transform: none; font-weight: 700; }
+/* Program page: the header sits on the page, not in its own card. */
+.project-hero { padding: 0 0 6px; border: 0; background: transparent; }
+.project-hero h1 { font-size: 30px; }
+.project-hero .eyebrow { color: var(--muted); font-size: 12px; letter-spacing: 0; text-transform: none; font-weight: 600; }
+.project-hero p, .project-meta { font-size: 13px; }
+.project-tabs { padding: 0; background: transparent; gap: 18px; }
+.project-tab { min-height: 46px; padding: 0 2px; font-size: 14px; color: var(--muted); }
+.tab-count { background: #eceef6; }
+/* Files and links: plain rows, no coloured icon tiles; type shown as text. */
+.resource-badge { width: auto; height: auto; padding: 0; background: none !important; color: var(--faint) !important; font-size: 11px; font-weight: 700; min-width: 42px; place-items: start; }
+.resource-title { font-size: 14px; }
+.resource-copy small { font-size: 12px; }
+.resource-row { padding: 13px 20px; }
+.dropzone { border-width: 1px; font-size: 13px; }
+/* Sidebar sync status: text changes only, no pulsing. */
+.integration-status[data-sync="saving"] .status-dot { animation: none; }
+.status-dot, .integration-status.connected .status-dot { box-shadow: none; }
+.integration-status b { font-size: 13px; }
+.integration-status small { font-size: 12px; }
+/* Modal type follows the same scale. */
+.modal h2 { font-size: 22px; }
+.form-field label { font-size: 12px; letter-spacing: 0; text-transform: none; }
+.form-field input, .form-field select, .form-field textarea { font-size: 14px; }
+.project-link, .task-link { font-size: 14px; }
+.secondary-cell { font-size: 12px; color: var(--faint); }
+.progress-label, .progress-cell span { font-size: 12px; }
+.project-filters summary { padding: 12px 0; font-size: 13px; font-weight: 600; }
+.nav-link { font-size: 14px; }
+.empty-state { font-size: 13px; }
+.empty-state strong { font-size: 14px; }
+/* Status colours carry meaning: at risk is red, on track blue, completed green. */
+.badge.at-risk { background: var(--red-soft); color: #ad5144; }
+.badge.on-track { background: var(--sky-soft); color: #1e5f86; }
+.progress-number { font-size: 12px; }

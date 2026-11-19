@@ -118,11 +118,11 @@ function progressMarkup(progress) {
   return `<div class="progress-wrap"><span class="progress-track"><span style="width:${Math.min(100, Math.max(0, progress))}%"></span></span><span class="progress-number">${progress}%</span></div>`;
 }
 function pageHeading(eyebrow, title, description, actions = "") {
-  return `<header class="page-heading"><div><div class="eyebrow">${escapeHtml(eyebrow)}</div><h1>${escapeHtml(title)}</h1><p class="heading-copy">${escapeHtml(description)}</p></div>${actions ? `<div class="heading-actions">${actions}</div>` : ""}</header>`;
+  return `<header class="page-heading"><div><h1>${escapeHtml(title)}</h1><p class="heading-copy">${escapeHtml(description)}</p></div>${actions ? `<div class="heading-actions">${actions}</div>` : ""}</header>`;
 }
 function statCard(label, value, note, icon, tone = "", drill = "") {
-  if (drill) return `<button type="button" class="stat-card clickable" data-stat="${drill}" aria-haspopup="dialog"><div class="stat-top"><span>${escapeHtml(label)}</span><span class="stat-icon ${tone}">${icon}</span></div><div class="stat-value">${escapeHtml(value)}</div><div class="stat-foot">${escapeHtml(note)} <span class="stat-more" aria-hidden="true">View list ›</span></div></button>`;
-  return `<article class="stat-card"><div class="stat-top"><span>${escapeHtml(label)}</span><span class="stat-icon ${tone}">${icon}</span></div><div class="stat-value">${escapeHtml(value)}</div><div class="stat-foot">${escapeHtml(note)}</div></article>`;
+  if (drill) return `<button type="button" class="stat-card clickable ${tone}" data-stat="${drill}" aria-haspopup="dialog"><div class="stat-top"><span>${escapeHtml(label)}</span></div><div class="stat-value">${escapeHtml(value)}</div><div class="stat-foot">${escapeHtml(note)} <span class="stat-more" aria-hidden="true">View list ›</span></div></button>`;
+  return `<article class="stat-card ${tone}"><div class="stat-top"><span>${escapeHtml(label)}</span></div><div class="stat-value">${escapeHtml(value)}</div><div class="stat-foot">${escapeHtml(note)}</div></article>`;
 }
 function projectTable(projects) {
   if (!projects.length) return `<div class="empty-state"><span class="empty-mark">▦</span><strong>No programs match</strong>Adjust your search or filters to see programs.</div>`;
