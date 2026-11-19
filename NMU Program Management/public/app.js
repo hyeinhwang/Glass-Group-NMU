@@ -198,8 +198,6 @@ function renderOverview() {
   const dueSoon = tasks.filter((task) => task.status !== "Completed" && dayDiff(task.dueDate) >= 0 && dayDiff(task.dueDate) <= 7);
   const completed = projects.filter((project) => project.status === "Completed").length;
   const completion = tasks.length ? Math.round(tasks.filter((task) => task.status === "Completed").length / tasks.length * 100) : 0;
-  const atRisk = projects.filter((project) => project.status === "At Risk");
-  const soonTasks = [...tasks].filter((task) => task.status !== "Completed").sort((a, b) => a.dueDate.localeCompare(b.dueDate)).slice(0, 5);
   const actions = `${isManager()?`<button class="button primary" data-action="create-project">＋ Create program</button>`:""}<button class="button ghost" data-nav="settings">↗ Airtable</button>`;
   return `${pageHeading("PROGRAM OPERATIONS", `Good morning, ${state.data.currentUser.name.split(" ")[0] || "team"}.`, "A clear view of every swim program, from early planning through the final report.", actions)}
     <div class="stat-grid" aria-label="Organization summary">
@@ -208,16 +206,10 @@ function renderOverview() {
       ${statCard("Overdue tasks", overdue.length, "Needs attention", "!", "red", "overdue")}
       ${statCard("Overall completion", `${completion}%`, `${completed} completed program${completed===1?"":"s"}`, "✓")}
     </div>
-    <div class="dashboard-grid">
-      <section class="panel">
+    <section class="panel overview-programs">
         <div class="panel-head"><div><h2 class="panel-title">Programs</h2><p class="panel-subtitle">A snapshot of active and upcoming work</p></div><div class="panel-actions"><input class="search-input" data-filter="project-search" placeholder="Search programs…" value="${escapeHtml(state.projectSearch)}" aria-label="Search programs"><select class="filter-select" data-filter="project-status" aria-label="Filter by program status"><option value="all">All statuses</option>${["On Track","At Risk","Planning","Completed"].map((item) => `<option ${state.projectStatus===item?"selected":""}>${item}</option>`).join("")}</select>${exportMenu()}</div></div>
         ${projectFiltersMarkup()}${projectTable(filteredProjects())}
-      </section>
-      <div class="right-stack">
-        <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Needs attention</h2><p class="panel-subtitle">Programs with risk indicators</p></div></div>${atRisk.length ? atRisk.map((project) => `<div class="compact-project" data-project="${escapeHtml(project.id)}"><strong>${escapeHtml(project.name)}</strong>${statusBadge(project.status)}<small>${project.progress}% complete · ${escapeHtml(project.location)}</small></div>`).join("") : `<div class="empty-state"><span class="empty-mark">✓</span><strong>All clear</strong>No at-risk programs right now.</div>`}</section>
-        <section class="panel"><div class="panel-head"><div><h2 class="panel-title">Next deadlines</h2><p class="panel-subtitle">Upcoming work across programs</p></div><button class="button small ghost" data-nav="timeline">View timeline</button></div>${soonTasks.length ? soonTasks.map((task) => `<div class="task-row"><div><button class="task-link" data-task="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button><div class="task-row-meta">${escapeHtml(task.projectName)} · ${dateLabel(task.dueDate,{month:"short",day:"numeric"})}</div></div>${statusBadge(task.status,isOverdue(task))}</div>`).join("") : `<div class="empty-state">No upcoming deadlines.</div>`}</section>
-      </div>
-    </div>`;
+      </section>`;
 }
 function overviewLists() {
   const tasks = state.data.tasks;
