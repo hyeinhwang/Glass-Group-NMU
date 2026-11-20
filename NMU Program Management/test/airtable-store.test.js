@@ -181,3 +181,18 @@ test("reads the real NMU base layout: Site location, Roles, Unique task names, f
     await base.close();
   }
 });
+
+test("sees a field added in Airtable after start-up without a restart", async () => {
+  const tables = SCHEMA.map((table) => table.name !== T.users ? table : { ...table, fields: table.fields.filter((field) => field.name !== "Password Hash") });
+  const base = createMockAirtable({ tables, rows: {} });
+  const apiRoot = await base.start();
+  try {
+    const store = createAirtableStore({ client: createAirtableClient({ apiKey: "test-token", baseId: "appMock", apiRoot, minIntervalMs: 0 }), cacheMs: 0 });
+    await assert.rejects(store.createUser({ name: "Ana", email: "ana@nmu.org", role: "admin", passwordHash: "x:y" }), /no "Password Hash" field/);
+    base.addField(T.users, { name: "Password Hash", type: "singleLineText" });
+    await store.createUser({ name: "Ana", email: "ana@nmu.org", role: "admin", passwordHash: "x:y" });
+    assert.equal((await store.model()).users[0].password_hash, "x:y");
+  } finally {
+    await base.close();
+  }
+});
