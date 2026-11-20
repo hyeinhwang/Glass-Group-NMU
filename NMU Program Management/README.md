@@ -1,6 +1,6 @@
 # NMU Program Operations
 
-A responsive web app for coordinating No More Under (NMU) swim programs: program creation from templates, task dashboards, dependencies, timeline changes, a calendar, comments, activity history and notifications.
+Technical notes for the NMU program operations app. For what the app does, deploying and team workflow, see the [repository README](../README.md).
 
 **Airtable is the system of record.** There is no app database. Every screen reads the NMU Airtable base and every change is written straight back to it, so people can keep working in Airtable and in the app at the same time.
 
@@ -18,9 +18,12 @@ Run it against a real base: copy `.env.example` to `.env`, fill in `AIRTABLE_API
 
 ```sh
 npm run airtable:setup             # report missing tables/fields (changes nothing)
-npm run airtable:setup -- --apply  # create them
+npm run airtable:setup -- --list   # print every table's field names and types (no record data)
+npm run airtable:setup -- --apply  # create what's missing
 npm start
 ```
+
+`--apply` needs the `schema.bases:write` scope and Creator permission on the base; otherwise add the reported fields by hand in Airtable (names must match exactly). The server re-reads the base's schema before reporting a field missing, so new fields are picked up without a restart.
 
 Open http://localhost:3000. Never commit `.env` or paste a token anywhere else.
 
@@ -43,6 +46,8 @@ Open http://localhost:3000. Never commit `.env` or paste a token anywhere else.
 `Planned Due Date` is the date the app calculates from the template. When a program's start date moves, open tasks' planned dates move with it; completed tasks and tasks with a `Due Date Override` keep their dates.
 
 **Live sync.** Tables are cached for 15 seconds (`NMU_AIRTABLE_CACHE_MS`). After that the app serves the cached copy while it re-reads Airtable in the background, so edits made in Airtable appear in the app within about half a minute; a table the app has just written to is always re-read. Open pages refresh themselves every 30 seconds. The **Airtable** pill in the sidebar shows the state: *Live*, *Saving…*, *Save failed* or *Not connected*.
+
+Selects the base already owns (Session `Status`, `Task Status`, `Rights`) are matched to the base's own options, ignoring case and common synonyms (e.g. Done = Completed). A new program's status is left empty if the base has no matching option.
 
 All Airtable calls go through `airtable-client.js`: 10 records per write, at most ~5 requests per second, and automatic retry on `429` (honouring `Retry-After`). Table and field names live in `airtable-schema.js`; change a name there if the base uses a different one.
 
@@ -82,12 +87,29 @@ Set these service variables:
 
 - `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`
 - `NMU_AUTH_MODE=required` (or `NODE_ENV=production`)
-- `NMU_ADMIN_EMAIL` and `NMU_ADMIN_PASSWORD` (12+ characters), optional `NMU_ADMIN_NAME`: on start-up the app creates this administrator in `Users`, or gives an existing Admin user with no password this one. Changing the variable later does not reset the password; use **Settings → Change your password**.
+- `NMU_ADMIN_EMAIL` and `NMU_ADMIN_PASSWORD` (12+ characters), optional `NMU_ADMIN_NAME`: on start-up the app makes sure this person is an administrator.
+  - If no user has this email, it creates one in `Users`.
+  - If the user exists but isn't an Admin, it makes them Admin and sets this password. This replaces their `Rights`.
+  - If the user is an Admin with no password, it sets this one.
+  - An Admin who already has a password keeps it, so changing the variable later doesn't reset the password; use **Settings → Change your password**.
 - `NMU_SESSION_SECRET` (recommended): a long random string used to sign session cookies. Without it the secret is derived from the Airtable token.
 
 No volume is needed: the app keeps no data on disk.
 
 Passwords are stored only as scrypt hashes. Sessions are signed HttpOnly, SameSite=Strict, Secure cookies that last 7 days; changing a password or disabling a user ends their sessions. Writes are origin-checked, sign-in is rate limited, and every permission is checked on the server. This is an MVP authentication layer, not a formal security assessment.
+
+## Code layout
+
+| File | Purpose |
+|---|---|
+| `server.js` | HTTP server, API routes, sign-in and permissions |
+| `airtable-store.js` | Reads the base into app objects; all writes |
+| `airtable-client.js` | Airtable REST client (batching, rate limit, retries, uploads) |
+| `airtable-schema.js` | Every table and field name the app uses — the one place to rename |
+| `seed-data.js` | Fictional demo data for `dev:mock`, `airtable:seed` and tests |
+| `scripts/` | `airtable-setup.js`, `airtable-seed.js`, `dev-mock.js` |
+| `public/` | The single-page front end (`index.html`, `app.js`, `styles.css`, logos) |
+| `test/` | Node test suites, the mock Airtable server, and `fixtures/nmu-base.js` (the real base's layout on 2026-11-18) |
 
 ## Tests
 

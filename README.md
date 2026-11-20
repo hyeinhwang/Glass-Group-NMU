@@ -1,72 +1,128 @@
 # Glass Group · NMU Program Operations
 
-The NMU Program Operations prototype is in [`NMU Program Management/`](./NMU%20Program%20Management/).
+A web app for No More Under (NMU) to plan and run swim programs. Staff create a program from a template, and the app turns each template step into a task with an owner and a due date. The team then tracks those tasks through the program: status, deadlines, files and links, comments and activity.
 
-The root `package.json` is a Railway entry point: it lets Railpack detect Node.js at the repository root and starts the app from its subfolder. Keep the Railway service Root Directory empty (repository root), and use `npm start` as the start command if Railway does not detect it automatically.
+**Airtable is the system of record.** The app has no database of its own. It reads the NMU Airtable base live and writes every change straight back to it, so people can work in Airtable and in the app at the same time.
+
+- **Live site:** https://glass-group-nmu-production.up.railway.app (deployed by Railway from `main`)
+- **App code and technical details:** [`NMU Program Management/`](./NMU%20Program%20Management/) — see its [README](./NMU%20Program%20Management/README.md)
+
+## What the app does
+
+| Page | What it's for |
+|---|---|
+| **Overview** | Active programs, tasks due this week, overdue tasks and overall completion (click a number to see the list), and the programs table with search, filters and CSV export. |
+| **My tasks** | The signed-in person's tasks, with filters (due soon, overdue, blocked…), search and sorting. |
+| **Programs** | Every program. Each program page has the tabs **Overview, Tasks, Timeline, Team, Activity and Resources**. |
+| **Resources tab** | Program links (Google Drive folders, docs, websites) and uploaded files, plus everything attached to the program's tasks. |
+| **Task details** | Status, owners (one or more), due date, priority, name and description, prerequisites, files and links, and notes. |
+| **Timeline / Calendar** | Task deadlines by program, and a month/week calendar. |
+| **Templates** | Edit template steps: name, days from program start, priority and planning phase. |
+| **Airtable data** | Admins can browse every table in the base (read-only). |
+| **Settings** | Change password; admins manage accounts and check the Airtable connection (**Check tables and fields**). |
+
+Other behaviour:
+- Moving a program's start date shifts the open tasks' dates with it.
+- A task can't be completed until its prerequisites are done; an admin can override this and give a reason.
+- People get in-app notifications when they're assigned work or a task becomes ready.
+
+The **Airtable** status in the sidebar shows whether data is live, saving, or failed to save.
 
 ## Run locally
 
-Requires Node.js 22.13 or newer.
-
-```sh
-cd "NMU Program Management"
-npm start
-```
-
-Open http://localhost:3000 (set `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID` in `.env` first, or run `npm run dev:mock` to try it with demo data). Run the workflow tests with `npm test` from the same directory.
-From the repository root, `npm start` starts the app and `npm test` runs its workflow tests.
-
-## Airtable
-
-Airtable is the app's only data store: there is no SQLite or other database. Programs, tasks, templates, people and roles, comments, activity and notifications are all read from and written to the NMU base live. What the app reads and writes, and how to set up a base, is in the [NMU app README](./NMU%20Program%20Management/README.md). Never commit `.env` or paste an Airtable token into source code or chat.
-
-## Team handoff and current status
-
-- **Repository:** [Glass-Group-NMU](https://github.com/jokingkingsley/Glass-Group-NMU)
-- **Production URL:** https://glass-group-nmu-production.up.railway.app
-
-### Deploying
-
-Railway deploys from `main` with the Root Directory left empty. Set `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID`, `NMU_AUTH_MODE=required`, `NMU_ADMIN_EMAIL`, `NMU_ADMIN_PASSWORD` (12+ characters) and `NMU_SESSION_SECRET` in Railway Variables. Before the first deploy against the real base, run `npm run airtable:setup` locally with the same token to see which tables and fields are missing, then `npm run airtable:setup -- --apply` to add them (it never deletes or renames anything). After deploying, **Settings → Check tables and fields** confirms the app can reach everything it needs. `AIRTABLE_PROJECTS_TABLE`, `AIRTABLE_FIELD_MAPPING` and `NMU_DATABASE_PATH` are no longer used.
-
-### Clone and work safely on a feature branch
-
-Each teammate should make their own clone. Do not copy files over the production checkout, work directly on `main`, or share one working directory with another teammate.
-
-Requirements: Git and Node.js 22.13 or newer. From a terminal, clone the repository and create a personal feature branch:
+Requires Git and Node.js 22.13 or newer. There are no npm dependencies to install.
 
 ```sh
 git clone https://github.com/jokingkingsley/Glass-Group-NMU.git
-cd Glass-Group-NMU
-git switch -c feature/short-description
+cd "Glass-Group-NMU/NMU Program Management"
+npm run dev:mock
 ```
 
-Choose a unique branch name, such as `feature/session-filters` or `fix/airtable-status`. The commands above create the branch from the latest default branch fetched by `git clone`. For an existing clone, update `main` first and create a new branch from it:
+`dev:mock` runs the app against an in-memory copy of the base filled with fictional demo data, so you need no token, and nothing is saved when it stops. Open http://localhost:3000. In this mode you aren't asked to sign in, and the top bar lets you switch between demo people to see each role.
+
+To run the app against the real base:
+1. Copy `.env.example` to `.env`.
+2. Fill in `AIRTABLE_API_KEY` and `AIRTABLE_BASE_ID`.
+3. Run `npm start`.
+
+`.env` is ignored by Git. Never commit it, and never paste a token into code or chat.
+
+From the repository root, `npm start` and `npm test` also work. The root `package.json` is only there so Railway can detect Node.js and start the app from its subfolder.
+
+## Deploying (Railway)
+
+Railway deploys `main` automatically. In the Railway service settings, leave **Root Directory** empty. Set these variables:
+
+| Variable | Value |
+|---|---|
+| `AIRTABLE_API_KEY` | Airtable personal access token. Needs scopes `data.records:read` and `data.records:write`, plus `schema.bases:read`, on the NMU base. |
+| `AIRTABLE_BASE_ID` | The base ID (starts with `app`; it's in the base's URL). |
+| `NMU_AUTH_MODE` | `required` |
+| `NMU_ADMIN_EMAIL`, `NMU_ADMIN_PASSWORD` | The first administrator. Password must be 12+ characters. |
+| `NMU_SESSION_SECRET` | A long random string that signs sign-in cookies. Make one with `openssl rand -hex 32`. |
+
+On start-up the server creates the administrator in the Airtable `Users` table if needed. The Railway log shows which Airtable base it uses (`Using Airtable base app…`).
+
+### Preparing the Airtable base
+
+The app uses the base's existing tables and adds a few fields of its own. To see what's missing, run this with the base's token in `.env`:
+
+```sh
+cd "NMU Program Management"
+npm run airtable:setup              # lists missing tables and fields; changes nothing
+npm run airtable:setup -- --apply   # creates them (never deletes or renames anything)
+```
+
+`--apply` needs two things:
+- `schema.bases:write` added to the token's scopes.
+- **Creator** (or owner) permission on the base for the token's owner.
+
+If you don't have that, a Creator can add the listed fields by hand in Airtable. Names must match exactly. The server notices new fields without a restart. In the app, **Settings → Check tables and fields** confirms everything is in place.
+
+As of 2026-11-19 the NMU base has every table and field the app needs.
+
+## Working on the code
+
+Each teammate works in their own clone, on their own branch. Never work directly on `main`.
 
 ```sh
 git switch main
 git pull --ff-only origin main
 git switch -c feature/short-description
-```
-
-Run the app locally from the repository root with `npm start`, or from `NMU Program Management/` with `npm start`. The root `package.json` starts the app in its subfolder. Run tests from the root with `npm test` or from the app folder with `npm test`.
-
-For private local configuration, copy `NMU Program Management/.env.example` to `NMU Program Management/.env` and add secrets only to that ignored local file. Do not share or commit `.env`, passwords, or tokens. To try the app without a token, run `npm run dev:mock` in `NMU Program Management/`.
-
-Before sharing changes, run the tests and commit only the files you intended to change:
-
-```sh
-npm test
-git status
+# …make changes…
+cd "NMU Program Management" && npm test
 git add path/to/changed-file
 git commit -m "Describe the change"
 git push -u origin feature/short-description
 ```
 
-Open a GitHub pull request from your feature branch into `main`. Review the diff and get a teammate's approval before merging; Railway deploys from `main`, so merging changes the live prototype. Do not force-push shared branches or merge unreviewed changes directly into `main`. If `main` changed while you were working, update your branch carefully and resolve conflicts before opening or updating the pull request.
+Open a pull request into `main` and have a teammate review it. Railway deploys `main`, so **merging changes the live site**. Don't force-push shared branches.
 
-### Known scope and safeguards
+The tests (`npm test`) run the whole app against a fake Airtable API that behaves like the real one, so they need no token. They cover:
+- programs, tasks and permissions
+- sign-in
+- files and links
+- that the app never writes Airtable's formula fields
 
-The app never writes the base's formula or lookup fields (`Due Date`, `Status`, `Assignee`, `Effective Due Date`) and never deletes records. All seeded program records and people are demonstration data, not verified NMU records. Local demo identity switching is not used when authentication is required.
+## Current status
 
-The `Week 1/`, `Week 3/`, and `Week 6/` folders present in the original developer's working copy are untracked local files, not part of this application or repository; do not add them to a commit unless their owner explicitly requests it.
+**Working (Nov 2026)**
+- Airtable-only data with live sync
+- Email and password sign-in with four roles (Admin, Program Manager, Employee, External Partner)
+- Programs created from templates, with tasks, multiple owners, prerequisites and timeline shifts
+- Calendar
+- Files (up to 5 MB, stored as Airtable attachments) and links, per program and per task
+- CSV export of programs and tasks
+
+**Not built yet**
+- Email reminders
+- Creating, duplicating or deleting templates in the app (edit them in Airtable)
+- Saving a finished program as a new template
+- "Open in Google Sheets" (CSV files open in Sheets via File → Import)
+- Google sign-in
+- A manual "Blocked" status (Blocked is shown automatically when prerequisites are open)
+
+**Safeguards**
+- The app never writes Airtable's formula or lookup fields: `Session Name`, `End Date`, `Due Date`, `Status`, `Assignee` and `Effective Due Date`.
+- It never deletes programs or tasks. Removing a file or link in the app deletes only that `Resources` record.
+- Demo data from `dev:mock` or `npm run airtable:seed -- --demo` is fictional.
