@@ -4,6 +4,7 @@ const state = {
   projectFilters: { city: "all", state: "all", programType: "all", host: "all", manager: "all", dateFrom: "", dateTo: "", sort: "date-asc" },
   taskStatusFilter: "all", taskSearch: "", myTaskFilter: "All tasks", taskSort: "due-asc", authRequired: false,
   calendar: { view: "month", cursor: new Date().toISOString().slice(0, 10), programId: "all" },
+  scheduleLayout: "calendar", scheduleProgram: "all",
   administratorConfigured: false, administratorError: "", accountUsers: [], schemaCheck: null,
   sync: { pending: 0, lastSavedAt: null, error: null, checkedAt: null, server: null },
   airtableData: { tables: [], selectedTableId: null, records: [], recordLabels: {}, total: 0, offset: 0, limit: 25, query: "", loading: false }
@@ -126,15 +127,36 @@ function statCard(label, value, note, icon, tone = "", drill = "") {
 }
 function projectTable(projects) {
   if (!projects.length) return `<div class="empty-state"><span class="empty-mark">▦</span><strong>No programs match</strong>Adjust your search or filters to see programs.</div>`;
-  return `<div class="table-wrap"><table class="project-table"><thead><tr><th>Program</th><th>Location</th><th>Start date</th><th>Project manager</th><th>Progress</th><th>Status</th></tr></thead><tbody>${projects.map((project) => `
+  const tasksByProject = new Map();
+  for (const task of state.data.tasks) {
+    if (!tasksByProject.has(task.projectId)) tasksByProject.set(task.projectId, []);
+    tasksByProject.get(task.projectId).push(task);
+  }
+  const dueCounts = (project) => {
+    const tasks = tasksByProject.get(project.id) || [];
+    return {
+      dueThisWeek: tasks.filter((task) => task.status !== "Completed" && dayDiff(task.dueDate) >= 0 && dayDiff(task.dueDate) <= 7).length,
+      overdue: tasks.filter(isOverdue).length
+    };
+  };
+  return `<div class="table-wrap project-table-wrap"><table class="project-table"><thead><tr><th>Program</th><th>Location</th><th>Program dates</th><th>Project manager</th><th>Due this week</th><th>Overdue</th><th>Progress</th><th>Status</th></tr></thead><tbody>${projects.map((project) => {
+    const counts = dueCounts(project);
+    const location = [project.city, project.state].filter(Boolean).join(", ") || project.location;
+    const dates = project.endDate && project.endDate !== project.startDate
+      ? `${dateLabel(project.startDate,{month:"short",day:"numeric"})} – ${dateLabel(project.endDate,{month:"short",day:"numeric",year:"numeric"})}`
+      : dateLabel(project.startDate,{month:"short",day:"numeric",year:"numeric"});
+    return `
     <tr>
-      <td><button class="project-link" data-project="${escapeHtml(project.id)}">${escapeHtml(project.name)}</button><span class="secondary-cell">${escapeHtml(project.programType)} · ${escapeHtml(project.hostOrganization || "Host not set")}</span></td>
-      <td>${escapeHtml(project.location)}</td>
-      <td>${dateLabel(project.startDate,{month:"short",day:"numeric"})}</td>
-      <td>${escapeHtml(project.projectManagerName || "—")}</td>
-      <td>${progressMarkup(project.progress)}</td>
-      <td>${statusBadge(project.status)}</td>
-    </tr>`).join("")}</tbody></table></div>`;
+      <td data-label="Program"><button class="project-link" data-project="${escapeHtml(project.id)}">${escapeHtml(project.name)}</button><span class="secondary-cell">${escapeHtml(project.programType)} · ${escapeHtml(project.hostOrganization || "Host not set")}</span></td>
+      <td data-label="Location">${escapeHtml(location)}</td>
+      <td data-label="Program dates">${dates}</td>
+      <td data-label="Project manager">${escapeHtml(project.projectManagerName || "—")}</td>
+      <td data-label="Due this week"><span class="task-count ${counts.dueThisWeek ? "has-tasks" : ""}">${counts.dueThisWeek}</span></td>
+      <td data-label="Overdue"><span class="task-count ${counts.overdue ? "has-overdue" : ""}">${counts.overdue}</span></td>
+      <td data-label="Progress">${progressMarkup(project.progress)}</td>
+      <td data-label="Status">${statusBadge(project.status)}</td>
+    </tr>`;
+  }).join("")}</tbody></table></div>`;
 }
 function locationParts(location = "") {
   const [city, ...stateParts] = String(location).split(",");
@@ -250,7 +272,7 @@ function taskRow(task, compact = false) {
   const currentUserTask = isMine(task);
   const status = task.isBlocked ? "Blocked" : task.status;
   return `<div class="${compact ? "my-task" : "task-row"}">
-    <div class="${compact ? "my-task-info" : ""}"><button class="task-link" data-task="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button><small class="${compact ? "" : "task-row-meta"}">${escapeHtml(task.projectName)}${task.assigneeName && !compact ? ` · ${escapeHtml(task.assigneeName)}` : ""}${task.milestone ? ` · ${escapeHtml(task.milestone)}` : ""}</small></div>
+    <div class="${compact ? "my-task-info" : ""}"><button class="task-link" data-task="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button><small class="${compact ? "my-task-program" : "task-row-meta"}"><strong>${escapeHtml(task.projectName)}</strong>${task.assigneeName && !compact ? ` · ${escapeHtml(task.assigneeName)}` : ""}${task.milestone ? ` · ${escapeHtml(task.milestone)}` : ""}</small></div>
     ${compact ? `<span class="${overdue?"my-task-date overdue-text":"my-task-date"}">${dateLabel(task.dueDate,{month:"short",day:"numeric"})}${overdue?" · late":""}</span><span>${priorityLabel(task.priority)}</span>${statusBadge(status,overdue)}` : statusBadge(status,overdue)}
   </div>`;
 }
@@ -279,19 +301,31 @@ function renderMyTasks() {
     }
   });
   return `${pageHeading("PERSONAL WORKSPACE", "My tasks", `Your assigned work across ${new Set(all.map((task) => task.projectId)).size} program${new Set(all.map((task) => task.projectId)).size===1?"":"s"}. Update progress, review dependencies, and leave context for your team.`)}
-    <div class="toolbar"><div class="filter-row">${["All tasks","Due soon","Overdue","Blocked","In progress","Not started","Completed"].map((label) => `<button class="button small ${state.myTaskFilter===label?"primary":"ghost"}" data-my-filter="${escapeHtml(label)}">${escapeHtml(label)}</button>`).join("")}</div><div class="task-toolbar-actions"><input class="search-input" data-filter="task-search" placeholder="Find a task…" value="${escapeHtml(state.taskSearch)}" aria-label="Search my tasks"><label class="compact-filter">Sort by<select data-filter="task-sort"><option value="due-asc" ${state.taskSort==="due-asc"?"selected":""}>Deadline</option><option value="name-asc" ${state.taskSort==="name-asc"?"selected":""}>Task name</option><option value="priority-desc" ${state.taskSort==="priority-desc"?"selected":""}>Priority</option><option value="status-asc" ${state.taskSort==="status-asc"?"selected":""}>Status</option><option value="program-asc" ${state.taskSort==="program-asc"?"selected":""}>Program</option></select></label></div></div>
+    <div class="toolbar"><div class="filter-row">${[["All tasks",""],["Due soon",""],["Overdue",""],["Blocked","Waiting until one or more prerequisite tasks are completed"],["In progress",""],["Not started",""],["Completed",""]].map(([label,title])=>`<button title="${escapeHtml(title)}" class="button small ${state.myTaskFilter===label?"primary":"ghost"}" data-my-filter="${escapeHtml(label)}">${escapeHtml(label)}</button>`).join("")}</div><div class="task-toolbar-actions"><input class="search-input" data-filter="task-search" placeholder="Find a task…" value="${escapeHtml(state.taskSearch)}" aria-label="Search my tasks"><label class="compact-filter">Sort by<select data-filter="task-sort"><option value="due-asc" ${state.taskSort==="due-asc"?"selected":""}>Deadline</option><option value="name-asc" ${state.taskSort==="name-asc"?"selected":""}>Task name</option><option value="priority-desc" ${state.taskSort==="priority-desc"?"selected":""}>Priority</option><option value="status-asc" ${state.taskSort==="status-asc"?"selected":""}>Status</option><option value="program-asc" ${state.taskSort==="program-asc"?"selected":""}>Program</option></select></label></div></div>
     ${visible.map(([label, tasks]) => `<div class="section-label">${label} <span class="muted">(${tasks.length})</span></div>${tasks.length ? `<div class="task-list">${sortTasks(tasks).map((task) => taskRow(task,true)).join("")}</div>` : `<div class="task-list"><div class="empty-state"><strong>Nothing here right now</strong>${label==="Overdue"?"No overdue assigned work.":"Tasks will appear here as work is assigned."}</div></div>`}`).join("")}`;
 }
+function renderSchedule() {
+  return `${pageHeading("SCHEDULE", state.scheduleLayout === "calendar" ? "Calendar" : "Program timeline", "Switch between calendar and timeline layouts without leaving Schedule.")}
+    <div class="toolbar"><div class="segmented-control" aria-label="Schedule layout"><button type="button" class="${state.scheduleLayout === "calendar" ? "active" : ""}" data-schedule-layout="calendar">Calendar view</button><button type="button" class="${state.scheduleLayout === "timeline" ? "active" : ""}" data-schedule-layout="timeline">Timeline view</button></div></div>
+    ${state.scheduleLayout === "calendar" ? renderCalendar() : renderTimeline()}`;
+}
 function renderTimeline() {
-  const tasks = state.data.tasks.filter((task) => task.status !== "Completed").sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+  const assignedTasks = state.data.tasks.filter(isMine);
+  const assignedProjectIds = new Set(assignedTasks.map((task) => task.projectId));
+  const programs = state.data.projects.filter((project) => assignedProjectIds.has(project.id));
+  if (state.scheduleProgram !== "all" && !programs.some((project) => project.id === state.scheduleProgram)) state.scheduleProgram = "all";
+  const tasks = state.data.tasks
+    .filter((task) => (state.scheduleProgram === "all" || task.projectId === state.scheduleProgram) && isMine(task))
+    .sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
   const groups = new Map();
   for (const task of tasks) {
     const date = new Date(`${task.dueDate}T12:00:00`);
     const key = date.toLocaleDateString(undefined,{month:"long",year:"numeric"});
     groups.set(key,[...(groups.get(key)||[]),task]);
   }
-  return `${pageHeading("SCHEDULE", "Program timeline", "A chronological view of upcoming work, grouped by month. Blocked and overdue tasks stay visible so teams can act early.")}
-    <div class="dashboard-grid"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">Upcoming deadlines</h2><p class="panel-subtitle">${tasks.length} open tasks · all accessible programs</p></div></div>${tasks.length ? [...groups.entries()].map(([month,items])=>`<div class="panel-head"><h3 class="panel-title">${escapeHtml(month)}</h3></div><div class="timeline-list">${items.map((task)=>`<div class="timeline-item ${isOverdue(task)?"overdue":""}"><time class="timeline-date">${dateLabel(task.dueDate,{month:"short",day:"numeric"})}</time><span class="timeline-marker"></span><div class="timeline-copy"><strong><button class="task-link" data-task="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button></strong><small>${escapeHtml(task.projectName)} · ${escapeHtml(task.assigneeName || "Unassigned")} · ${escapeHtml(task.milestone)} · ${task.isBlocked?"Blocked by prerequisite":task.status}</small></div></div>`).join("")}</div>`).join("") : `<div class="empty-state"><strong>No open deadlines</strong>All tasks are complete.</div>`}</section><section class="panel"><div class="panel-head"><div><h2 class="panel-title">Date changes</h2><p class="panel-subtitle">Preview and apply from a program workspace</p></div></div><div class="empty-state"><span class="empty-mark">◷</span><strong>Replan with a preview</strong>Open a program workspace and choose “Adjust dates” to preview how an updated program start date will shift outstanding tasks.</div></section></div>`;
+  return `${pageHeading("SCHEDULE", "Program timeline", "Your assigned task timeline. Completed tasks have a filled status marker.")}
+    <div class="toolbar"><label class="compact-filter">Program<select data-schedule-program>${programs.length ? `<option value="all" ${state.scheduleProgram === "all" ? "selected" : ""}>All assigned programs</option>${programs.map((project)=>`<option value="${escapeHtml(project.id)}" ${state.scheduleProgram === project.id ? "selected" : ""}>${escapeHtml(project.name)}</option>`).join("")}` : `<option value="all">No assigned programs</option>`}</select></label></div>
+    <div class="dashboard-grid"><section class="panel"><div class="panel-head"><div><h2 class="panel-title">Assigned deadlines</h2><p class="panel-subtitle">${tasks.length} assigned task${tasks.length === 1 ? "" : "s"}</p></div></div>${tasks.length ? [...groups.entries()].map(([month,items])=>`<div class="panel-head"><h3 class="panel-title">${escapeHtml(month)}</h3></div><div class="timeline-list">${items.map((task)=>`<div class="timeline-item ${isOverdue(task)?"overdue":""}"><time class="timeline-date">${dateLabel(task.dueDate,{month:"short",day:"numeric"})}</time><span class="timeline-marker ${task.status === "Completed" ? "completed" : ""}" aria-label="${task.status === "Completed" ? "Completed" : "Not completed"}"></span><div class="timeline-copy"><strong><button class="task-link" data-task="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button></strong><small>${escapeHtml(task.projectName)} · ${escapeHtml(task.assigneeName || "Unassigned")}${task.milestone ? ` · ${escapeHtml(task.milestone)}` : ""} · ${task.isBlocked?"Blocked by prerequisite":task.status}</small></div></div>`).join("")}</div>`).join("") : `<div class="empty-state"><strong>No assigned deadlines</strong>Tasks assigned to you will appear here.</div>`}</section><section class="panel"><div class="panel-head"><div><h2 class="panel-title">Date changes</h2><p class="panel-subtitle">Preview and apply from a program workspace</p></div></div><div class="empty-state"><span class="empty-mark">◷</span><strong>Replan with a preview</strong>Open a program workspace and choose “Adjust dates” to preview how an updated program start date will shift outstanding tasks.</div></section></div>`;
 }
 // ---- Calendar ---------------------------------------------------------------
 const CALENDAR_COLORS = [
@@ -611,7 +645,7 @@ function render() {
   document.getElementById("crumb-current").textContent = state.page.replaceAll("-"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase());
   document.querySelectorAll(".nav-link").forEach((item)=>item.classList.toggle("active",item.dataset.nav===state.page&&!state.projectId));
   if (state.projectId && state.projectData) return renderProjectPage();
-  const renderers = { overview:renderOverview, projects:renderProjects, "my-tasks":renderMyTasks, timeline:renderTimeline, calendar:renderCalendar, templates:renderTemplates, notifications:renderNotifications, settings:renderSettings, "airtable-data":renderAirtableData };
+  const renderers = { overview:renderOverview, projects:renderProjects, "my-tasks":renderMyTasks, schedule:renderSchedule, timeline:()=>{ state.scheduleLayout="timeline"; return renderSchedule(); }, calendar:()=>{ state.scheduleLayout="calendar"; return renderSchedule(); }, templates:renderTemplates, notifications:renderNotifications, settings:renderSettings, "airtable-data":renderAirtableData };
   content.innerHTML = (renderers[state.page] || renderOverview)();
 }
 // Current owners first (lead on top), then everyone else alphabetically.
@@ -641,8 +675,8 @@ async function openTask(taskId) {
       ${fullTask.canEdit?`<div class="form-field full"><label for="task-description">Description</label><textarea id="task-description" name="description" maxlength="4000" placeholder="What needs to happen, and anything the owner should know" data-original="${escapeHtml(fullTask.description||"")}">${escapeHtml(fullTask.description||"")}</textarea></div>`:`<div class="form-field full"><label>Description</label><div class="integration-callout">${escapeHtml(fullTask.description||"No task description.")}</div></div>`}${dependencies}</div>
       ${isAdmin()&&fullTask.isBlocked?`<div class="form-field" style="margin-top:12px"><label for="override-reason">Administrator override reason · required to bypass prerequisites</label><textarea id="override-reason" name="overrideReason" maxlength="500" placeholder="Record why this task must be completed before its prerequisites."></textarea></div>`:""}
       <div id="task-resources" data-project-id="${escapeHtml(projectData.project.id)}" data-task-id="${escapeHtml(taskId)}">${taskResourcesMarkup(projectData, fullTask)}</div>
-      <div class="section-label">Task notes (${comments.length})</div>${comments.length?`<div class="comment-list">${comments.map((item)=>`<article class="comment"><strong>${escapeHtml(item.userName)} · ${dateLabel(item.createdAt,{month:"short",day:"numeric"})}</strong><p>${escapeHtml(item.content)}</p></article>`).join("")}</div>`:`<div class="form-hint" style="margin:0 0 9px">No notes yet. Add context for the next person who picks up this work.</div>`}
-      <div class="form-field"><label for="task-comment">Add a note</label><textarea id="task-comment" name="comment" maxlength="2000" placeholder="Add an update or handoff note…"></textarea></div>
+      <div class="section-label">Messages (${comments.length})</div>${comments.length?`<div class="comment-list">${comments.map((item)=>`<article class="comment"><strong>${escapeHtml(item.userName)} · ${dateLabel(item.createdAt,{month:"short",day:"numeric"})}</strong><p>${escapeHtml(item.content)}</p></article>`).join("")}</div>`:`<div class="form-hint" style="margin:0 0 9px">No notes yet. Add context for the next person who picks up this work.</div>`}
+      <div class="form-field"><label for="task-comment">Send a message</label><textarea id="task-comment" name="comment" maxlength="2000" placeholder="Send an update or handoff message…"></textarea></div>
     </div><footer class="modal-actions"><button type="button" class="button ghost" data-action="close-modal">Cancel</button><button type="submit" class="button primary">Save updates</button></footer></form></section></div>`;
   }
 function formField(label, name, type="text", options={}) {
@@ -859,6 +893,8 @@ document.addEventListener("click",async(event)=>{
   if (statCardButton) { showStatList(statCardButton.dataset.stat); return; }
   const projectLink = event.target.closest("[data-project]");
   if (projectLink) { modalRoot.innerHTML = ""; await openProject(projectLink.dataset.project); return; }
+  const scheduleLayout = event.target.closest("[data-schedule-layout]");
+  if (scheduleLayout) { state.scheduleLayout = scheduleLayout.dataset.scheduleLayout; render(); return; }
   const calendarView = event.target.closest("[data-calendar-view]");
   if (calendarView) { state.calendar.view = calendarView.dataset.calendarView; render(); return; }
   const calendarStep = event.target.closest("[data-calendar-step]");
@@ -937,6 +973,7 @@ document.addEventListener("change",(event)=>{
   if(event.target.matches('[data-filter="task-status"]')) { state.taskStatusFilter=event.target.value; render(); }
   if(event.target.matches('[data-filter="task-sort"]')) { state.taskSort=event.target.value; render(); }
   if(event.target.matches("[data-calendar-program]")) { state.calendar.programId=event.target.value; render(); }
+  if(event.target.matches("[data-schedule-program]")) { state.scheduleProgram=event.target.value; render(); }
   if(event.target.id==="user-select") {
     state.userId=event.target.value;
     localStorage.setItem("nmu-demo-user",state.userId);
@@ -1061,7 +1098,22 @@ document.addEventListener("submit",async(event)=>{
       if(event.target.querySelector("#task-due-date")?.type==="date"&&data.get("dueDate")!==event.target.dataset.originalDueDate) {
         await api(`/api/tasks/${encodeURIComponent(taskId)}/due-date`,{method:"PATCH",body:JSON.stringify({dueDate:data.get("dueDate")})});
       }
-      if(event.target.querySelector("#task-status:not([disabled])")&&(data.get("status")!==event.target.dataset.originalStatus||data.get("overrideReason"))) await api(`/api/tasks/${encodeURIComponent(taskId)}/status`,{method:"PATCH",body:JSON.stringify({status:data.get("status"),overrideReason:data.get("overrideReason")||""})});
+      if(event.target.querySelector("#task-status:not([disabled])")&&(data.get("status")!==event.target.dataset.originalStatus||data.get("overrideReason"))) {
+        const nextStatus = data.get("status") === "Completed" ? "Completed" : data.get("status");
+        await api(`/api/tasks/${encodeURIComponent(taskId)}/status`,{method:"PATCH",body:JSON.stringify({status:nextStatus,overrideReason:data.get("overrideReason")||""})});
+        const cachedTask = state.data.tasks.find((task)=>task.id===taskId);
+        if(cachedTask) {
+          cachedTask.status = nextStatus;
+          cachedTask.isBlocked = false;
+          cachedTask.completedAt = nextStatus === "Completed" ? new Date().toISOString() : null;
+          const cachedProject = state.data.projects.find((project)=>project.id===cachedTask.projectId);
+          if(cachedProject) {
+            const projectTasks = state.data.tasks.filter((task)=>task.projectId===cachedProject.id);
+            cachedProject.completedCount = projectTasks.filter((task)=>task.status === "Completed").length;
+            cachedProject.progress = projectTasks.length ? Math.round(cachedProject.completedCount/projectTasks.length*100) : 0;
+          }
+        }
+      }
       if(comment) await api(`/api/tasks/${encodeURIComponent(taskId)}/comments`,{method:"POST",body:JSON.stringify({content:comment})});
       const projectId=state.data.tasks.find((task)=>task.id===taskId)?.projectId;
       modalRoot.innerHTML="";

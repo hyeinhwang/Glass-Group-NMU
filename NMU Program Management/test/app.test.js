@@ -355,6 +355,11 @@ test("NMU project, dependency, access, and timeline workflows", async (t) => {
       method: "POST", body: JSON.stringify({})
     });
     assert.equal(cannotCreate.status, 403);
+    const employeeBootstrap = await request("/api/bootstrap", "u-mary");
+    assert.equal(employeeBootstrap.body.projects.length, 8);
+    assert.equal(employeeBootstrap.status, 200);
+    const employeeProject = await request("/api/projects/p-portland", "u-mary");
+    assert.equal(employeeProject.status, 200);
     const partnerBootstrap = await request("/api/bootstrap", "u-partner");
     assert.equal(partnerBootstrap.body.users.length, 7);
     assert.ok(partnerBootstrap.body.users.every((user) => !("email" in user)));

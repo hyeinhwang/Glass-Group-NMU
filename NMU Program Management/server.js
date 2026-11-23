@@ -149,7 +149,7 @@ function canAccessProject(model, user, projectId) {
   return projectMemberIds(model, project).has(user.id);
 }
 const canViewProject = (model, user, projectId) => model.projectsById.has(projectId)
-  && (user.role === "program_manager" || canAccessProject(model, user, projectId));
+  && (["program_manager", "employee"].includes(user.role) || canAccessProject(model, user, projectId));
 function canEditTask(model, user, task) {
   return canManage(user) || (user.role === "program_manager" && canAccessProject(model, user, task.project_id))
     || (["employee", "external_partner"].includes(user.role) && isTaskOwner(task, user.id));
@@ -239,7 +239,7 @@ function projectResponse(model, project) {
     taskCount: tasks.length, completedCount: completed, details: project.details
   };
 }
-const visibleProjects = (model, user) => (canManage(user) || user.role === "program_manager"
+const visibleProjects = (model, user) => (["admin", "program_manager", "employee"].includes(user.role)
   ? model.projects : model.projects.filter((project) => canAccessProject(model, user, project.id)));
 function templateResponse(model, template, { full = true } = {}) {
   return {
