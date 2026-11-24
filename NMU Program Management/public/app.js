@@ -220,7 +220,7 @@ function renderOverview() {
   const dueSoon = tasks.filter((task) => task.status !== "Completed" && dayDiff(task.dueDate) >= 0 && dayDiff(task.dueDate) <= 7);
   const completed = projects.filter((project) => project.status === "Completed").length;
   const completion = tasks.length ? Math.round(tasks.filter((task) => task.status === "Completed").length / tasks.length * 100) : 0;
-  const actions = `${isManager()?`<button class="button primary" data-action="create-project">＋ Create program</button>`:""}<button class="button ghost" data-nav="settings">↗ Airtable</button>`;
+  const actions = `${isManager()?`<button class="button primary" data-action="create-project">＋ Create program</button>`:""}${isAdmin()?`<button class="button ghost" data-nav="airtable-data">↗ Airtable</button>`:""}`;
   return `${pageHeading("PROGRAM OPERATIONS", `Good morning, ${state.data.currentUser.name.split(" ")[0] || "team"}.`, "A clear view of every swim program, from early planning through the final report.", actions)}
     <div class="stat-grid" aria-label="Organization summary">
       ${statCard("Active programs", active.length, `${projects.length} total programs`, "▦", "", "active")}
@@ -465,11 +465,12 @@ function renderAirtableData() {
     </div>
     ${data.loading ? `<div class="empty-state"><span class="spinner"></span>Loading Airtable records…</div>` : data.records.length ? `<div class="table-wrap airtable-record-wrap"><table class="airtable-record-table"><thead><tr><th>Record ID</th>${selected.fields.map((field) => `<th>${escapeHtml(field.name)}<small>${escapeHtml(field.type)}</small></th>`).join("")}</tr></thead><tbody>${data.records.map((record) => `<tr><td class="airtable-record-id">${escapeHtml(record.id)}</td>${selected.fields.map((field) => `<td>${escapeHtml(airtableCellValue(record.fields[field.name],data.recordLabels))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>` : `<div class="empty-state"><strong>${data.query?"No matching records":"No records in this table"}</strong>${data.query?"Try a different search.":"This table is empty in Airtable."}</div>`}
     <div class="airtable-pagination"><span>Showing ${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit,data.total)} of ${data.total}</span><div><button class="button small ghost" data-airtable-page="${Math.max(0,data.offset-data.limit)}" ${data.offset===0||data.loading?"disabled":""}>Previous</button><button class="button small ghost" data-airtable-page="${data.offset+data.limit}" ${data.offset+data.limit>=data.total||data.loading?"disabled":""}>Next</button></div></div>
-  </section>` : `<section class="panel"><div class="empty-state"><strong>No Airtable tables found</strong>Check the Airtable connection in Settings.</div></section>`;
+  </section>` : `<section class="panel"><div class="empty-state"><strong>No Airtable tables found</strong>Check the Airtable connection above.</div></section>`;
   return `${pageHeading("ADMINISTRATOR WORKSPACE", "Airtable data", "Browse every table in the connected base and its linked records, read live. This read-only view is available only to administrators.")}
     <div class="stat-grid" aria-label="Airtable data summary">${statCard("Tables",data.tables.length,"All tables in the connected base","▧")}${statCard("Records",totalRecords,"Read live from Airtable","▤")}${statCard("Connection",syncState().label,"Data is read from Airtable, not copied","◷")}${statCard("Programs in workspace",state.data.projects.length,"Sessions linked into NMU","▦")}</div>
+    ${airtableConnectionPanel()}
     <section class="panel airtable-table-picker"><div class="panel-head"><div><h2 class="panel-title">Base tables</h2><p class="panel-subtitle">Select a table to inspect its fields and records.</p></div><button class="button small ghost" data-action="airtable-refresh-data">↻ Refresh table list</button></div>
-      ${data.tables.length ? `<div class="airtable-table-chips">${data.tables.map((table)=>`<button class="airtable-table-chip ${table.id===data.selectedTableId?"selected":""}" data-airtable-table="${escapeHtml(table.id)}" aria-pressed="${table.id===data.selectedTableId}"><span>${escapeHtml(table.name)}</span><small>${table.recordCount} records</small></button>`).join("")}</div>` : `<div class="empty-state">${data.loading?"Loading Airtable tables…":"No tables found. Check the Airtable connection in Settings."}</div>`}
+      ${data.tables.length ? `<div class="airtable-table-chips">${data.tables.map((table)=>`<button class="airtable-table-chip ${table.id===data.selectedTableId?"selected":""}" data-airtable-table="${escapeHtml(table.id)}" aria-pressed="${table.id===data.selectedTableId}"><span>${escapeHtml(table.name)}</span><small>${table.recordCount} records</small></button>`).join("")}</div>` : `<div class="empty-state">${data.loading?"Loading Airtable tables…":"No tables found. Check the Airtable connection above."}</div>`}
     </section>
     ${recordTable}`;
 }
@@ -518,26 +519,32 @@ async function loadAirtableRecords(offset = state.airtableData.offset) {
     }
   }
 }
-function renderSettings() {
+// Airtable connection details and the schema check (shown on the Airtable data page).
+function airtableConnectionPanel() {
   const connected = state.data.integration.airtableConfigured;
   const check = state.schemaCheck;
-  const accountManager = state.authRequired && isAdmin() ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">TEAM ACCESS</div><h2>Manage team accounts</h2><p>Create individual accounts with the least-privilege role they need. Share temporary passwords privately; teammates can change their password after signing in.</p>
-      <form id="create-user-form"><div class="form-grid">${formField("Full name","newUserName","text",{required:true})}${formField("Email address","newUserEmail","email",{required:true})}${formField("Role","newUserRole","select",{required:true,choices:[["employee","Employee"],["program_manager","Program Manager"],["admin","Administrator"],["external_partner","External Partner"]]})}${formField("Temporary password (12+ characters)","newUserPassword","password",{required:true,placeholder:"Share separately and privately"})}</div><button class="button primary" type="submit" style="margin-top:12px">Create account</button></form>
-      <div class="table-wrap" style="margin-top:18px"><table class="project-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>${state.accountUsers.map((account)=>`<tr><td>${escapeHtml(account.name)}</td><td>${escapeHtml(account.email)}</td><td>${escapeHtml(account.role.replaceAll("_"," "))}</td><td>${account.active?"Active":"Disabled"}</td><td>${account.id===state.data.currentUser.id?"You":`<button class="text-action" data-account-toggle="${escapeHtml(account.id)}" data-active="${account.active?"false":"true"}">${account.active?"Disable":"Enable"}</button>`}</td></tr>`).join("")}</tbody></table></div>
-    </section>` : "";
-  const passwordSettings = state.authRequired ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">ACCOUNT SECURITY</div><h2>Change your password</h2><form id="change-password-form"><div class="form-grid">${formField("Current password","currentPassword","password",{required:true})}${formField("New password (12+ characters)","newPassword","password",{required:true})}${formField("Confirm new password","confirmPassword","password",{required:true})}</div><button class="button primary" type="submit" style="margin-top:12px">Update password</button></form></section>` : "";
-  const airtableSettings = isAdmin() ? `${pageHeading("WORKSPACE SETTINGS", "Airtable connection", "Airtable is the system of record. Every screen reads it live and every change is saved straight to it.")}
-    <section class="integration-panel"><div class="eyebrow">AIRTABLE · SYSTEM OF RECORD</div><h2>Live connection</h2>
+  return `<section class="integration-panel airtable-connection"><div class="eyebrow">AIRTABLE · SYSTEM OF RECORD</div><h2>Live connection</h2>
       <p>There is no separate app database. Programs are <span class="code">Session</span> records, tasks are <span class="code">Work</span> records, templates are <span class="code">Template List</span> and <span class="code">Steps</span>, and people and roles come from <span class="code">Users</span> → <span class="code">Rights</span>. Comments, activity and notifications are stored in their own Airtable tables.</p>
-      <div class="integration-callout ${connected?"":"warning"}">${connected?escapeHtml(syncSummary()):"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
+      <div class="integration-callout ${connected?"":"warning"}">${connected?`<span data-sync-summary>${escapeHtml(syncSummary())}</span>`:"Airtable credentials are not configured on the server. Add AIRTABLE_API_KEY and AIRTABLE_BASE_ID in Railway Variables, then redeploy."}</div>
       <p><b>Work fields:</b> the app reads <span class="code">Task Status</span>, <span class="code">Effective Due Date</span> (then <span class="code">Due Date Override</span>, then <span class="code">Due Date</span>) and <span class="code">Assigned To</span>, and writes <span class="code">Task Status</span>, <span class="code">Due Date Override</span>, <span class="code">Assigned To</span> and <span class="code">Completed Date</span>, plus the task name, description, priority, planning phase, planned date and prerequisites. Formula and lookup fields (<span class="code">Due Date</span>, <span class="code">Status</span>, <span class="code">Assignee</span>) are never written, and Work and Session records are never deleted. Files and links live in the <span class="code">Resources</span> table.</p>
       <p><b>Access:</b> the server token needs <span class="code">schema.bases:read</span>, <span class="code">data.records:read</span> and <span class="code">data.records:write</span> on this base (plus <span class="code">schema.bases:write</span> once, to run <span class="code">npm run airtable:setup</span>). Keep it in Railway Variables; never put it in the browser or GitHub.</p>
       <div class="heading-actions"><button class="button ghost" data-action="airtable-check" ${connected?"":"disabled"}>Check tables and fields</button></div>
       ${check?`<div class="integration-callout ${check.missingTables.length||check.missingFields.length||check.readOnlyConflicts.length?"warning":""}" style="margin-top:14px">${check.missingTables.length||check.missingFields.length||check.readOnlyConflicts.length
         ?`${check.missingTables.length?`Missing tables: ${escapeHtml(check.missingTables.join(", "))}. `:""}${check.missingFields.length?`Missing fields: ${escapeHtml(check.missingFields.join(", "))}. `:""}${check.readOnlyConflicts.length?`These fields are formulas or lookups in Airtable, so the app can't write them: ${escapeHtml(check.readOnlyConflicts.join(", "))}. `:""}Run <span class="code">npm run airtable:setup -- --apply</span> to add what is missing.`
         :`All ${check.tables.length} tables are reachable and every field the app uses is present.`}</div>`:""}
-    </section>` : pageHeading("ACCOUNT SETTINGS", "Your account", "Manage your sign-in details.");
-  return `${airtableSettings}
+    </section>`;
+}
+function renderSettings() {
+  const accountManager = state.authRequired && isAdmin() ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">TEAM ACCESS</div><h2>Team accounts</h2><p>Create individual accounts with the least-privilege role they need. Share temporary passwords privately; teammates can change their password after signing in.</p>
+      <form id="create-user-form"><div class="form-grid">${formField("Full name","newUserName","text",{required:true})}${formField("Email address","newUserEmail","email",{required:true})}${formField("Role","newUserRole","select",{required:true,choices:[["employee","Employee"],["program_manager","Program Manager"],["admin","Administrator"],["external_partner","External Partner"]]})}${formField("Temporary password (12+ characters)","newUserPassword","password",{required:true,placeholder:"Share separately and privately"})}</div><button class="button primary" type="submit" style="margin-top:12px">Create account</button></form>
+      <div class="table-wrap" style="margin-top:18px"><table class="project-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Access</th><th></th></tr></thead><tbody>${state.accountUsers.map((account)=>`<tr><td>${escapeHtml(account.name)}</td><td>${escapeHtml(account.email)}</td><td>${escapeHtml(account.role.replaceAll("_"," "))}</td><td>${account.active?"Active":"Disabled"}</td><td>${account.id===state.data.currentUser.id?"You":`<button class="text-action" data-account-toggle="${escapeHtml(account.id)}" data-active="${account.active?"false":"true"}">${account.active?"Disable":"Enable"}</button>`}</td></tr>`).join("")}</tbody></table></div>
+    </section>` : "";
+  const passwordSettings = state.authRequired ? `<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">ACCOUNT SECURITY</div><h2>Change your password</h2><form id="change-password-form"><div class="form-grid">${formField("Current password","currentPassword","password",{required:true})}${formField("New password (12+ characters)","newPassword","password",{required:true})}${formField("Confirm new password","confirmPassword","password",{required:true})}</div><button class="button primary" type="submit" style="margin-top:12px">Update password</button></form></section>` : "";
+  // Admins manage people here; the Airtable connection lives on the Airtable data page.
+  const heading = isAdmin()
+    ? pageHeading("ADMIN SETTINGS", "Admin settings", "Add teammates, choose their role, and turn off access when someone leaves.")
+    : pageHeading("ACCOUNT SETTINGS", "Account settings", "Manage your sign-in details.");
+  return `${heading}
     ${accountManager}
     ${passwordSettings}
     ${!state.authRequired?`<section class="integration-panel" style="margin-top:14px"><div class="eyebrow">DEMO IDENTITY</div><h2>Switch demonstration account</h2><p>Use the account menu in the top bar to preview management, program manager, employee, and partner experiences. This is demo identity switching, not production authentication.</p><div class="integration-callout warning">Demo identity switching is for local development only and must not be used for real operational data.</div></section>`:""}`;
@@ -846,13 +853,18 @@ function syncSummary() {
   return `${status.label}. ${status.detail}${write}`;
 }
 function renderSyncStatus() {
-  const pill = document.querySelector(".integration-status");
-  if (!pill || !state.data) return;
+  if (!state.data) return;
   const status = syncState();
-  pill.dataset.sync = status.tone;
-  pill.classList.toggle("connected", status.tone === "live");
-  pill.title = status.detail;
-  document.getElementById("airtable-status").textContent = status.label;
+  const dot = document.getElementById("nav-sync");
+  if (dot) { dot.dataset.sync = status.tone; dot.closest(".nav-link").title = `Airtable: ${status.label}. ${status.detail}`; }
+  const live = document.querySelector("[data-sync-summary]");
+  if (live) live.textContent = syncSummary();
+  // The bottom sidebar button: admins manage team accounts there; others their own account.
+  const label = document.getElementById("settings-label");
+  if (label) {
+    label.textContent = isAdmin() ? "Admin settings" : "Settings";
+    document.getElementById("settings-sub").textContent = isAdmin() ? "Team accounts & access" : "Your account";
+  }
 }
 // Pull fresh data from Airtable in the background so other people's changes appear.
 async function backgroundRefresh() {
