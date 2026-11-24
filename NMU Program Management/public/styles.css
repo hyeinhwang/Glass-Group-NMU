@@ -606,3 +606,6 @@ button.stat-card:hover .stat-more { text-decoration: underline; }
 }
 .nav-icon { flex: 0 0 22px; }
 .nav-link:hover, .integration-status.settings-link:hover { background: rgba(231,232,245,.14); color: #fff; }
+
+/* Anything marked hidden stays hidden, even when a class sets display (e.g. the Airtable data menu for non-admins). */
+[hidden] { display: none !important; }
