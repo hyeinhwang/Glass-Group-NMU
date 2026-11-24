@@ -571,3 +571,15 @@ button.stat-card:hover .stat-more { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   .sidebar, .sidebar * { transition: none !important; }
 }
+
+/* Bottom sidebar button: Settings / Admin settings (gear instead of a status dot). */
+.integration-status .settings-icon, .integration-status.connected .settings-icon { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 0; background: none; box-shadow: none; color: #e6e7f3; font-size: 16px; animation: none; }
+.settings-link { margin-top: 0; }
+@media (min-width: 781px) { .integration-status.settings-link { padding: 12px 14px; } }
+/* Airtable sync state: a small dot on the Airtable data menu item. */
+.nav-sync { position: absolute; top: 9px; left: 32px; width: 7px; height: 7px; border-radius: 50%; background: #3fbfef; }
+.nav-sync[data-sync="saving"] { background: #9fdcf5; }
+.nav-sync[data-sync="error"] { background: #e0605a; }
+.nav-sync[data-sync="off"] { background: #8d8fa8; }
+.nav-link.active .nav-sync { box-shadow: 0 0 0 2px #e6e7f4; }
+.integration-panel.airtable-connection { max-width: none; margin-bottom: 14px; }
