@@ -592,3 +592,17 @@ button.stat-card:hover .stat-more { text-decoration: underline; }
 }
 .integration-status.settings-link { border: 0; background: transparent; }
 .integration-status.settings-link:hover { background: rgba(231,232,245,.08); }
+/* Hover and active highlights run edge to edge across the rail (and the open menu). */
+@media (min-width: 781px) {
+  .navigation { justify-items: stretch; gap: 2px; }
+  .nav-link, .sidebar:is(:hover, :has(:focus-visible), .open) .nav-link {
+    width: auto; margin: 0 -12px; padding: 0 25px; border-radius: 0; transition: background .16s ease, color .16s ease;
+  }
+  .nav-link .nav-pill { left: 40px; }
+  .nav-sync { left: 44px; }
+  .integration-status.settings-link, .sidebar:is(:hover, :has(:focus-visible), .open) .integration-status.settings-link {
+    width: auto; margin: 10px -12px 14px; padding: 12px 27px; border-radius: 0;
+  }
+}
+.nav-icon { flex: 0 0 22px; }
+.nav-link:hover, .integration-status.settings-link:hover { background: rgba(231,232,245,.14); color: #fff; }
