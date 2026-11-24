@@ -1358,3 +1358,26 @@ function exportCsv(kind) {
   ]);
   showToast(`Exported ${tasks.length} task${tasks.length === 1 ? "" : "s"}.`);
 }
+
+// ---------------------------------------------------------------- sidebar rail
+// The sidebar is an icon rail; hovering opens it. The ☰ button pins it open (for touch
+// and keyboard users) and closes it again; choosing a page closes a pinned rail.
+(() => {
+  const sidebar = document.getElementById("sidebar");
+  const toggle = sidebar?.querySelector(".rail-toggle");
+  if (!sidebar || !toggle) return;
+  const setOpen = (open) => {
+    sidebar.classList.toggle("open", open);
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.setAttribute("aria-label", open ? "Close menu" : "Open menu");
+  };
+  toggle.addEventListener("click", () => setOpen(!sidebar.classList.contains("open")));
+  sidebar.addEventListener("click", (event) => { if (event.target.closest("[data-nav]")) { setOpen(false); event.target.closest("[data-nav]").blur(); } });
+  // Escape closes the rail and hands focus back to the page.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !(sidebar.classList.contains("open") || sidebar.contains(document.activeElement))) return;
+    setOpen(false);
+    document.activeElement?.blur();
+  });
+  document.addEventListener("click", (event) => { if (sidebar.classList.contains("open") && !sidebar.contains(event.target)) setOpen(false); });
+})();

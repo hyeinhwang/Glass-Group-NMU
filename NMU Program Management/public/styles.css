@@ -527,3 +527,47 @@ button.stat-card:hover .stat-more { text-decoration: underline; }
 .badge.at-risk { background: var(--red-soft); color: #ad5144; }
 .badge.on-track { background: var(--sky-soft); color: #1e5f86; }
 .progress-number { font-size: 12px; }
+
+/* ===== Sidebar as a hamburger rail (desktop/tablet) =====
+   Collapsed to a 72px icon rail so the work area gets the full width. Hover, keyboard
+   focus or the ☰ button opens it over the page; it closes when you move back to work. */
+.rail-toggle { display: none; }
+.brand-mark { display: none; }
+.brand-logo { padding: 0; border-radius: 0; background: transparent; }
+@media (min-width: 781px) {
+  .shell, .shell:not(.x) { grid-template-columns: 72px minmax(0, 1fr); }
+  .sidebar {
+    width: 72px; padding: 16px 12px 16px; overflow: hidden;
+    transition: width .18s ease, box-shadow .18s ease; transition-delay: 0s;
+  }
+  .sidebar:hover, .sidebar:has(:focus-visible), .sidebar.open {
+    width: 252px; box-shadow: 12px 0 32px rgba(20, 23, 70, .28); transition-delay: .12s;
+  }
+  .rail-toggle {
+    display: grid; align-content: center; gap: 4px; width: 48px; height: 40px; margin: 0 0 14px; padding: 0 14px;
+    border: 0; border-radius: 8px; background: transparent; cursor: pointer;
+  }
+  .rail-toggle span { display: block; height: 2px; border-radius: 2px; background: #e6e7f3; }
+  .rail-toggle:hover { background: rgba(255,255,255,.08); }
+  .brand { position: relative; min-height: 78px; padding: 0 4px 22px; }
+  .brand-mark { display: block; position: absolute; left: 4px; top: 0; width: 40px; height: 40px; transition: opacity .12s ease; }
+  .brand-logo, .brand-tagline { opacity: 0; transition: opacity .12s ease; white-space: nowrap; }
+  .brand-logo img { width: 160px; }
+  .nav-label, .nav-caption, .sidebar-footer, .integration-status > span:not(.status-dot), .arrow { opacity: 0; white-space: nowrap; transition: opacity .12s ease; }
+  .nav-link { gap: 14px; padding: 0 13px; }
+  .nav-pill { position: absolute; top: 6px; left: 28px; min-width: 16px; height: 16px; padding: 0 4px; font-size: 9px; transition: left .18s ease; }
+  .integration-status { width: 48px; margin: 10px 0 14px; padding: 12px 19px; overflow: hidden; }
+  .sidebar-footer { border-top-color: transparent; }
+  /* open */
+  .sidebar:is(:hover, :has(:focus-visible), .open) .brand-mark { opacity: 0; }
+  .sidebar:is(:hover, :has(:focus-visible), .open) :is(.brand-logo, .brand-tagline, .nav-label, .nav-caption, .sidebar-footer, .integration-status > span:not(.status-dot), .arrow) { opacity: 1; transition-delay: .14s; }
+  .sidebar:is(:hover, :has(:focus-visible), .open) .nav-pill { position: static; min-width: 20px; height: 20px; margin-left: auto; font-size: 10px; }
+  .sidebar:is(:hover, :has(:focus-visible), .open) .integration-status { width: calc(100% - 14px); margin: 13px 7px 22px; padding: 12px 10px; }
+  .sidebar:is(:hover, :has(:focus-visible), .open) .sidebar-footer { border-top-color: rgba(219,220,243,.13); }
+}
+@media (min-width: 781px) and (max-width: 1050px) {
+  .shell { grid-template-columns: 72px minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .sidebar * { transition: none !important; }
+}
