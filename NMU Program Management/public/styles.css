@@ -609,3 +609,16 @@ button.stat-card:hover .stat-more { text-decoration: underline; }
 
 /* Anything marked hidden stays hidden, even when a class sets display (e.g. the Airtable data menu for non-admins). */
 [hidden] { display: none !important; }
+
+/* Templates page: description on one line, note on top, two cards per row grouped by program type. */
+.templates-page .heading-copy { max-width: none; }
+.templates-note { margin: -8px 0 26px; }
+.template-group + .template-group { margin-top: 30px; }
+.template-group-title { margin: 0 0 12px; color: var(--ink); font: 700 17px "Manrope", sans-serif; }
+.templates-page .template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.templates-page .template-card { display: flex; flex-direction: column; min-height: 190px; padding: 24px; }
+.templates-page .template-card h2 { font-size: 18px; }
+.templates-page .template-card p { flex: 1; font-size: 13px; }
+.templates-page .template-meta { font-size: 13px; }
+@media (max-width: 780px) { .templates-page .template-grid { grid-template-columns: 1fr; } }
+.templates-note { font-size: 13px; padding: 12px 16px; }

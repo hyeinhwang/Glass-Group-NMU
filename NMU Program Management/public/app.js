@@ -431,9 +431,19 @@ function renderCalendar() {
     </div>`;
 }
 function renderTemplates() {
-  return `${pageHeading("REUSABLE WORKFLOWS", "Task templates", "Start each program with a repeatable checklist. Template tasks are generated relative to the program date and linked by prerequisites.")}
-    <div class="template-grid">${state.data.templates.map((template)=>`<article class="template-card"><div class="eyebrow">${escapeHtml(template.programType)} PROGRAM</div><h2>${escapeHtml(template.name)}</h2><p>${escapeHtml(template.description)}</p><div class="template-meta"><span>${templateTaskCount(template.id)} tasks · relative deadlines</span>${isManager()?`<button class="button small ghost" data-edit-template="${escapeHtml(template.id)}">Edit template</button>`:`<span>Reusable</span>`}</div></article>`).join("")}</div>
-    ${isManager()?`<div class="integration-callout" style="margin-top:16px">Template changes apply to programs created from now on; existing program tasks and deadlines are preserved.</div>`:""}`;
+  // Grouped by program type (Learn to Swim, Swim Safely Series, …), two templates per row.
+  const order = ["Learn to Swim", "Swim Safely Series"];
+  const groups = new Map();
+  for (const template of state.data.templates) {
+    const type = template.programType || "Other";
+    if (!groups.has(type)) groups.set(type, []);
+    groups.get(type).push(template);
+  }
+  const types = [...groups.keys()].sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99) || a.localeCompare(b));
+  const card = (template) => `<article class="template-card"><div class="eyebrow">${escapeHtml(template.programType || "Any")} PROGRAM</div><h2>${escapeHtml(template.name)}</h2><p>${escapeHtml(template.description)}</p><div class="template-meta"><span>${templateTaskCount(template.id)} ${templateTaskCount(template.id) === 1 ? "task" : "tasks"} · relative deadlines</span>${isManager()?`<button class="button small ghost" data-edit-template="${escapeHtml(template.id)}">Edit template</button>`:`<span>Reusable</span>`}</div></article>`;
+  return `<div class="templates-page">${pageHeading("REUSABLE WORKFLOWS", "Task templates", "Start each program with a repeatable checklist. Template tasks are generated relative to the program date and linked by prerequisites.")}
+    ${isManager()?`<div class="integration-callout templates-note">Template changes apply to programs created from now on; existing program tasks and deadlines are preserved.</div>`:""}
+    ${types.map((type) => `<section class="template-group"><h2 class="template-group-title">${escapeHtml(type)}</h2><div class="template-grid">${groups.get(type).map(card).join("")}</div></section>`).join("")}</div>`;
 }
 function templateTaskCount(templateId) {
   return state.data.templates.find((template)=>template.id===templateId)?.tasks?.length || 0;
